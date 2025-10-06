@@ -1,5 +1,15 @@
 
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import (
+    create_engine,
+    Column,
+    Integer,
+    String,
+    Float,
+    DateTime,
+    ForeignKey,
+    Text,
+    Boolean,
+)
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime
@@ -157,13 +167,46 @@ class ShipmentItem(Base):
 
 class Notification(Base):
     __tablename__ = "notifications"
-    
+
     id = Column(String, primary_key=True)
     branch_id = Column(String, ForeignKey("branches.id"), nullable=False)
     title = Column(String, nullable=False)
     message = Column(String, nullable=False)
     is_read = Column(Integer, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Requisition(Base):
+    __tablename__ = "requisitions"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    branch_id = Column(String, ForeignKey("branches.id"), nullable=False)
+    employee_id = Column(String, ForeignKey("employees.id"), nullable=True)
+
+    status = Column(String, nullable=False, default="pending")
+    comment = Column(Text, nullable=True)
+    processed_by = Column(String, ForeignKey("users.id"), nullable=True)
+    processed_at = Column(DateTime, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    items = relationship(
+        "RequisitionItem", back_populates="requisition", cascade="all, delete-orphan"
+    )
+
+
+class RequisitionItem(Base):
+    __tablename__ = "requisition_items"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    requisition_id = Column(
+        String, ForeignKey("requisitions.id", ondelete="CASCADE"), nullable=False
+    )
+    item_type = Column(String, nullable=False)
+    item_id = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=False)
+
+    requisition = relationship("Requisition", back_populates="items")
 
 # Database dependency
 def get_db():

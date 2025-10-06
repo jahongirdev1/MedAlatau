@@ -34,14 +34,16 @@ from database import (
     Shipment as DBShipment,
     ShipmentItem as DBShipmentItem,
     Notification as DBNotification,
+    Requisition as DBRequisition,
+    RequisitionItem as DBRequisitionItem,
 )
 from schemas import *
-from typing import List, Optional, Iterable, Callable
+from typing import List, Optional, Iterable, Callable, Literal
 from datetime import datetime, date, timedelta, timezone, time
 from zoneinfo import ZoneInfo
 import uuid
 import json
-from pydantic import ValidationError
+from pydantic import ValidationError, BaseModel, conint, conlist
 from services.stock import get_available_qty, decrement_stock, ItemType
 import traceback
 import logging
@@ -94,6 +96,123 @@ def humanize_items(raw) -> str:
         qty = it.get("quantity") or 0
         parts.append(f"{name} — {qty} шт.")
     return "; ".join(parts)
+
+
+class RequisitionItemIn(BaseModel):
+    type: Literal["medicine", "medical_device"]
+    id: str
+    quantity: conint(gt=0)
+
+
+class CreateRequisitionIn(BaseModel):
+    comment: Optional[str] = None
+    items: conlist(RequisitionItemIn, min_length=1)
+
+
+class RequisitionItemOut(BaseModel):
+    type: str
+    id: str
+    name: str
+    quantity: int
+
+
+class RequisitionOut(BaseModel):
+    id: str
+    branch_id: str
+    employee_id: Optional[str]
+    status: Literal["pending", "approved", "rejected"]
+    comment: Optional[str]
+    processed_by: Optional[str]
+    processed_at: Optional[datetime]
+    created_at: datetime
+    items: List[RequisitionItemOut]
+
+
+class UpdateRequisitionStatusIn(BaseModel):
+    status: Literal["approved", "rejected"]
+    reason: Optional[str] = None
+
+
+def get_current_user(
+    request: Request, db: Session = Depends(get_db)
+) -> DBUser:
+    user_id = request.headers.get("X-User-Id")
+    if not user_id:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.lower().startswith("bearer token_"):
+            user_id = auth_header.split("token_", 1)[-1].strip()
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Пользователь не авторизован",
+        )
+
+    user = db.query(DBUser).filter(DBUser.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Пользователь не найден",
+        )
+
+    return user
+
+
+def resolve_branch_id_from_user(db: Session, user: DBUser) -> Optional[str]:
+    if getattr(user, "branch_name", None):
+        branch = db.query(DBBranch).filter(DBBranch.name == user.branch_name).first()
+        return branch.id if branch else None
+    return None
+
+
+def require_branch_user(user: DBUser):
+    if user.role != "branch":
+        raise HTTPException(status_code=403, detail="Доступ только для филиала")
+
+
+def require_admin_user(user: DBUser):
+    if user.role != "admin":
+        raise HTTPException(status_code=403, detail="Доступ только для склада")
+
+
+def serialize_requisition(req: DBRequisition, db: Session) -> RequisitionOut:
+    items_out: List[RequisitionItemOut] = []
+    for item in req.items:
+        name = "Неизвестный товар"
+        if item.item_type == "medicine":
+            product = db.query(DBMedicine).filter(DBMedicine.id == item.item_id).first()
+            if product:
+                name = product.name
+        elif item.item_type == "medical_device":
+            device = (
+                db.query(DBMedicalDevice)
+                .filter(DBMedicalDevice.id == item.item_id)
+                .first()
+            )
+            if device:
+                name = device.name
+
+        items_out.append(
+            RequisitionItemOut(
+                type=item.item_type,
+                id=item.item_id,
+                name=name,
+                quantity=item.quantity,
+            )
+        )
+
+    return RequisitionOut(
+        id=req.id,
+        branch_id=req.branch_id,
+        employee_id=req.employee_id,
+        status=req.status,
+        comment=req.comment,
+        processed_by=req.processed_by,
+        processed_at=req.processed_at,
+        created_at=req.created_at,
+        items=items_out,
+    )
+
 
 def ensure_schema_patches():
     with engine.begin() as conn:
@@ -404,6 +523,188 @@ async def delete_branch(branch_id: str, db: Session = Depends(get_db)):
     db.delete(branch)
     db.commit()
     return {"message": "Branch deleted"}
+
+# Requisitions - branch endpoints
+@app.post("/branch/requisitions")
+async def create_branch_requisition(
+    payload: CreateRequisitionIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_branch_user(current_user)
+
+    branch_id = resolve_branch_id_from_user(db, current_user)
+    if not branch_id:
+        raise HTTPException(
+            status_code=400, detail="Не удалось определить филиал пользователя"
+        )
+
+    employee_id = request.headers.get("X-Employee-Id") or None
+
+    requisition = DBRequisition(
+        branch_id=branch_id,
+        employee_id=employee_id,
+        status="pending",
+        comment=payload.comment,
+    )
+
+    for item in payload.items:
+        if item.type == "medicine":
+            product = db.query(DBMedicine).filter(DBMedicine.id == item.id).first()
+            if not product:
+                raise HTTPException(status_code=404, detail="Лекарство не найдено")
+        elif item.type == "medical_device":
+            product = (
+                db.query(DBMedicalDevice)
+                .filter(DBMedicalDevice.id == item.id)
+                .first()
+            )
+            if not product:
+                raise HTTPException(status_code=404, detail="Медицинское изделие не найдено")
+        else:
+            raise HTTPException(status_code=400, detail="Неверный тип позиции")
+
+        requisition.items.append(
+            DBRequisitionItem(
+                item_type=item.type,
+                item_id=item.id,
+                quantity=item.quantity,
+            )
+        )
+
+    db.add(requisition)
+    db.commit()
+    db.refresh(requisition)
+
+    return {"data": {"id": requisition.id, "status": requisition.status}}
+
+
+@app.get("/branch/requisitions")
+async def list_branch_requisitions(
+    status: Optional[str] = Query(default=None),
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_branch_user(current_user)
+
+    branch_id = resolve_branch_id_from_user(db, current_user)
+    if not branch_id:
+        raise HTTPException(
+            status_code=400, detail="Не удалось определить филиал пользователя"
+        )
+
+    query = (
+        db.query(DBRequisition)
+        .options(joinedload(DBRequisition.items))
+        .filter(DBRequisition.branch_id == branch_id)
+        .order_by(DBRequisition.created_at.desc())
+    )
+
+    if status:
+        query = query.filter(DBRequisition.status == status)
+    if date_from:
+        query = query.filter(DBRequisition.created_at >= date_from)
+    if date_to:
+        query = query.filter(DBRequisition.created_at <= date_to)
+
+    requisitions = query.all()
+    data = [serialize_requisition(req, db).model_dump() for req in requisitions]
+    return {"data": data}
+
+
+# Requisitions - admin endpoints
+@app.get("/admin/requisitions")
+async def list_admin_requisitions(
+    branch_id: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_admin_user(current_user)
+
+    query = (
+        db.query(DBRequisition)
+        .options(joinedload(DBRequisition.items))
+        .order_by(DBRequisition.created_at.desc())
+    )
+
+    if branch_id:
+        query = query.filter(DBRequisition.branch_id == branch_id)
+    if status:
+        query = query.filter(DBRequisition.status == status)
+    if date_from:
+        query = query.filter(DBRequisition.created_at >= date_from)
+    if date_to:
+        query = query.filter(DBRequisition.created_at <= date_to)
+
+    requisitions = query.all()
+    data = [serialize_requisition(req, db).model_dump() for req in requisitions]
+    return {"data": data}
+
+
+@app.get("/admin/requisitions/{requisition_id}")
+async def get_admin_requisition(
+    requisition_id: str,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_admin_user(current_user)
+
+    requisition = (
+        db.query(DBRequisition)
+        .options(joinedload(DBRequisition.items))
+        .filter(DBRequisition.id == requisition_id)
+        .first()
+    )
+    if not requisition:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    return {"data": serialize_requisition(requisition, db).model_dump()}
+
+
+@app.patch("/admin/requisitions/{requisition_id}/status")
+async def update_admin_requisition_status(
+    requisition_id: str,
+    payload: UpdateRequisitionStatusIn,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_admin_user(current_user)
+
+    requisition = (
+        db.query(DBRequisition)
+        .options(joinedload(DBRequisition.items))
+        .filter(DBRequisition.id == requisition_id)
+        .first()
+    )
+    if not requisition:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    if requisition.status != "pending":
+        raise HTTPException(status_code=400, detail="Статус можно изменить только из состояния 'pending'")
+
+    requisition.status = payload.status
+    requisition.processed_by = current_user.id
+    requisition.processed_at = datetime.utcnow()
+
+    if payload.status == "rejected" and payload.reason:
+        if requisition.comment:
+            requisition.comment = (
+                f"{requisition.comment}\nПричина отклонения: {payload.reason}"
+            )
+        else:
+            requisition.comment = payload.reason
+
+    db.commit()
+    db.refresh(requisition)
+
+    return {"data": serialize_requisition(requisition, db).model_dump()}
+
 
 # Medicine endpoints
 @app.get("/medicines", response_model=List[Medicine])

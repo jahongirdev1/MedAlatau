@@ -5,19 +5,20 @@ import { Button } from '@/components/ui/button';
 import { storage } from '@/utils/storage';
 import GlobalTitleLock from '@/components/GlobalTitleLock';
 import { 
-  Home, 
-  Package, 
-  Users, 
-  FileText, 
-  UserCheck, 
-  Building2, 
+  Home,
+  Package,
+  Users,
+  FileText,
+  UserCheck,
+  Building2,
   ArrowLeftRight,
   LogOut,
   Menu,
   X,
   Truck,
   User,
-  Clock
+  Clock,
+  ClipboardList
 } from 'lucide-react';
 
 interface LayoutProps {
@@ -84,6 +85,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/admin/medical-devices', icon: Package, label: 'ИМН' },
     { path: '/admin/arrivals', icon: Truck, label: 'Поступления' },
     { path: '/admin/shipments', icon: ArrowLeftRight, label: 'Отправки' },
+    { path: '/admin/requisitions', icon: ClipboardList, label: 'Заявки' },
     { path: '/admin/employees', icon: Users, label: 'Сотрудники' },
     { path: '/admin/patients', icon: UserCheck, label: 'Пациенты' },
     { path: '/admin/reports/warehouse', icon: FileText, label: 'Отчёты склада' },
@@ -99,6 +101,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/branch/medical-devices', icon: Package, label: 'ИМН' },
     { path: '/branch/medicines', icon: Package, label: 'Лекарства' },
     { path: '/branch/dispensing', icon: Package, label: 'Выдачи' },
+    { path: '/branch/requisitions', icon: ClipboardList, label: 'Заявки' },
     { path: '/branch/patients', icon: UserCheck, label: 'Пациенты' },
     { path: '/branch/employees', icon: Users, label: 'Сотрудники' },
     { path: '/branch/calendar', icon: Clock, label: 'Календарь' },
