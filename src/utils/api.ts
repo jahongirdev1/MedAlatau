@@ -1,4 +1,5 @@
 import type { DispensingRow, IncomingRow } from '@/types';
+import { storage } from '@/utils/storage';
 
 export const API_BASE_URL = 'http://localhost:8000';
 
@@ -18,8 +19,29 @@ class ApiService {
     options: RequestInit = {}
   ): Promise<ApiResponse<T>> {
     try {
+      const currentUser = storage.getCurrentUser();
+      const token = storage.getToken();
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(options.headers as Record<string, string> | undefined),
+      };
+
+      if (currentUser?.id) {
+        headers['X-User-Id'] = currentUser.id;
+      }
+      if (currentUser?.role) {
+        headers['X-User-Role'] = currentUser.role;
+      }
+      if (currentUser?.branchName) {
+        headers['X-User-Branch-Name'] = currentUser.branchName;
+      }
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
       const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        headers,
         ...options,
       });
 
@@ -632,6 +654,41 @@ class ApiService {
       branch_id: payload.branch_id,
       medicines,
       medical_devices,
+    });
+  }
+
+  // Branch requisitions
+  getBranchRequisitions(params: { status?: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams(params as any).toString();
+    const suffix = qs ? `?${qs}` : '';
+    return this.request<{ data: any[] }>(`/branch/requisitions${suffix}`);
+  }
+
+  createBranchRequisition(body: {
+    comment?: string;
+    items: { type: 'medicine' | 'medical_device'; id: string; quantity: number }[];
+  }) {
+    return this.request<{ data: { id: string; status: string } }>(`/branch/requisitions`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Admin requisitions
+  getAdminRequisitions(params: { branch_id?: string; status?: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams(params as any).toString();
+    const suffix = qs ? `?${qs}` : '';
+    return this.request<{ data: any[] }>(`/admin/requisitions${suffix}`);
+  }
+
+  getAdminRequisitionById(id: string) {
+    return this.request<{ data: any }>(`/admin/requisitions/${id}`);
+  }
+
+  updateAdminRequisitionStatus(id: string, body: { status: 'approved' | 'rejected'; reason?: string }) {
+    return this.request<{ data: any }>(`/admin/requisitions/${id}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
     });
   }
 

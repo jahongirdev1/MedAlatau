@@ -29,6 +29,7 @@ import AdminCalendar from "@/pages/admin/Calendar";
 import Analytics from "@/pages/admin/Analytics";
 import MedicalDevicesCategories from "@/pages/admin/MedicalDevicesCategories";
 import MedicineCategories from "@/pages/admin/MedicineCategories";
+import AdminRequisitions from "@/pages/admin/Requisitions";
 
 // Branch pages
 import BranchDashboard from "@/pages/branch/BranchDashboard";
@@ -40,6 +41,7 @@ import BranchReports from "@/pages/branch/BranchReports";
 import BranchCalendar from "@/pages/branch/Calendar";
 import BranchMedicalDevices from "@/pages/branch/MedicalDevices";
 import BranchMedicines from "@/pages/branch/Medicines";
+import BranchRequisitions from "@/pages/branch/Requisitions";
 
 import NotFound from "./pages/NotFound";
 
@@ -91,6 +93,7 @@ const App = () => {
             <Route path="/admin/medicine-categories" element={<ProtectedRoute requiredRole="admin"><MedicineCategories /></ProtectedRoute>} />
             <Route path="/admin/medical-devices-categories" element={<ProtectedRoute requiredRole="admin"><MedicalDevicesCategories /></ProtectedRoute>} />
             <Route path="/admin/shipments" element={<ProtectedRoute requiredRole="admin"><Shipments /></ProtectedRoute>} />
+            <Route path="/admin/requisitions" element={<ProtectedRoute requiredRole="admin"><AdminRequisitions /></ProtectedRoute>} />
             <Route path="/admin/reports" element={<ProtectedRoute requiredRole="admin"><Reports /></ProtectedRoute>} />
             <Route path="/admin/reports/warehouse" element={<ProtectedRoute requiredRole="admin"><ReportsWarehouse /></ProtectedRoute>} />
             <Route path="/admin/reports/branches" element={<ProtectedRoute requiredRole="admin"><ReportsBranches /></ProtectedRoute>} />
@@ -114,6 +117,7 @@ const App = () => {
             <Route path="/branch/calendar" element={<ProtectedRoute requiredRole="branch"><BranchCalendar /></ProtectedRoute>} />
             <Route path="/branch/medical-devices" element={<ProtectedRoute requiredRole="branch"><BranchMedicalDevices /></ProtectedRoute>} />
             <Route path="/branch/medicines" element={<ProtectedRoute requiredRole="branch"><BranchMedicines /></ProtectedRoute>} />
+            <Route path="/branch/requisitions" element={<ProtectedRoute requiredRole="branch"><BranchRequisitions /></ProtectedRoute>} />
             
             <Route path="*" element={<NotFound />} />
           </Routes>
