@@ -182,6 +182,7 @@ class Requisition(Base):
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     branch_id = Column(String, ForeignKey("branches.id"), nullable=False)
     employee_id = Column(String, ForeignKey("employees.id"), nullable=True)
+    shipment_id = Column(String, ForeignKey("shipments.id"), nullable=True)
 
     status = Column(String, nullable=False, default="pending")
     comment = Column(Text, nullable=True)

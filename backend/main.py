@@ -44,7 +44,19 @@ from zoneinfo import ZoneInfo
 import uuid
 import json
 from pydantic import ValidationError, BaseModel, conint, conlist
-from services.stock import get_available_qty, decrement_stock, ItemType
+from services.stock import (
+    get_available_qty,
+    get_main_available_qty,
+    decrement_stock,
+    ItemType,
+)
+from utils.waybill import (
+    WaybillData,
+    WaybillItem,
+    now_almaty,
+    render_waybill_pdf,
+    safe_filename,
+)
 import traceback
 import logging
 import re
@@ -120,7 +132,7 @@ class RequisitionOut(BaseModel):
     id: str
     branch_id: str
     employee_id: Optional[str]
-    status: Literal["pending", "approved", "rejected"]
+    status: Literal["pending", "approved", "rejected", "accepted"]
     comment: Optional[str]
     processed_by: Optional[str]
     processed_at: Optional[datetime]
@@ -131,6 +143,36 @@ class RequisitionOut(BaseModel):
 class UpdateRequisitionStatusIn(BaseModel):
     status: Literal["approved", "rejected"]
     reason: Optional[str] = None
+
+
+class WarehouseRequestItemAvailability(BaseModel):
+    item_type: Literal["medicine", "medical_device"]
+    item_id: str
+    name: str
+    requested_qty: int
+    available_qty: int
+    shortage: int
+
+
+class WarehouseRequestOut(BaseModel):
+    id: str
+    branch_id: str
+    branch_name: Optional[str]
+    employee_id: Optional[str]
+    status: str
+    comment: Optional[str]
+    processed_by: Optional[str]
+    processed_at: Optional[datetime]
+    created_at: Optional[datetime]
+    shipment_id: Optional[str]
+    availability: List[WarehouseRequestItemAvailability]
+    items: List[RequisitionItemOut]
+    shortage_total: int
+    can_fulfill: bool
+
+
+class AcceptWarehouseRequestIn(BaseModel):
+    comment: Optional[str] = None
 
 
 def get_current_user(
@@ -214,6 +256,169 @@ def serialize_requisition(req: DBRequisition, db: Session) -> RequisitionOut:
     )
 
 
+def serialize_warehouse_request(
+    req: DBRequisition,
+    db: Session,
+    branch_lookup: Optional[dict[str, str]] = None,
+) -> WarehouseRequestOut:
+    base = serialize_requisition(req, db)
+
+    availability: List[WarehouseRequestItemAvailability] = []
+    items_with_names: List[RequisitionItemOut] = []
+    total_shortage = 0
+    cache: dict[tuple[str, str], tuple[int, Optional[str]]] = {}
+
+    for item in base.items:
+        item_type_key = item.type
+        key = (item_type_key, item.id)
+        if key not in cache:
+            if item_type_key == "medicine":
+                qty, stock_name = get_main_available_qty(
+                    db, ItemType.medicine, item.id
+                )
+                cache[key] = (qty, stock_name)
+            elif item_type_key == "medical_device":
+                qty, stock_name = get_main_available_qty(
+                    db, ItemType.medical_device, item.id
+                )
+                cache[key] = (qty, stock_name)
+            else:
+                cache[key] = (0, None)
+
+        available_qty, stock_name = cache[key]
+        name = item.name or stock_name or "Неизвестная позиция"
+        shortage = max(item.quantity - available_qty, 0)
+        total_shortage += shortage
+
+        availability.append(
+            WarehouseRequestItemAvailability(
+                item_type=item_type_key,
+                item_id=item.id,
+                name=name,
+                requested_qty=item.quantity,
+                available_qty=available_qty,
+                shortage=shortage,
+            )
+        )
+        items_with_names.append(
+            RequisitionItemOut(
+                type=item_type_key,
+                id=item.id,
+                name=name,
+                quantity=item.quantity,
+            )
+        )
+
+    branch_name = None
+    if branch_lookup and req.branch_id in branch_lookup:
+        branch_name = branch_lookup[req.branch_id]
+    else:
+        branch_row = (
+            db.query(DBBranch.name)
+            .filter(DBBranch.id == req.branch_id)
+            .first()
+        )
+        if branch_row:
+            branch_name = branch_row[0]
+
+    return WarehouseRequestOut(
+        id=req.id,
+        branch_id=req.branch_id,
+        branch_name=branch_name,
+        employee_id=base.employee_id,
+        status=req.status,
+        comment=req.comment,
+        processed_by=req.processed_by,
+        processed_at=req.processed_at,
+        created_at=req.created_at,
+        shipment_id=req.shipment_id,
+        availability=availability,
+        items=items_with_names,
+        shortage_total=total_shortage,
+        can_fulfill=total_shortage == 0,
+    )
+
+
+def build_requisition_waybill(req: DBRequisition, db: Session) -> WaybillData:
+    branch = db.query(DBBranch).filter(DBBranch.id == req.branch_id).first()
+    branch_name = branch.name if branch else req.branch_id
+
+    items: List[WaybillItem] = []
+    if req.shipment_id:
+        shipment_items = (
+            db.query(DBShipmentItem)
+            .filter(DBShipmentItem.shipment_id == req.shipment_id)
+            .all()
+        )
+        for item in shipment_items:
+            items.append(
+                WaybillItem(
+                    name=item.item_name,
+                    item_type=item.item_type,
+                    quantity=item.quantity,
+                )
+            )
+
+    if not items:
+        serialized = serialize_requisition(req, db)
+        for item in serialized.items:
+            items.append(
+                WaybillItem(
+                    name=item.name,
+                    item_type=item.type,
+                    quantity=item.quantity,
+                )
+            )
+
+    created_dt = req.processed_at or req.created_at or now_almaty()
+    number = f"{created_dt.year}-{req.id[:8]}"
+
+    return WaybillData(
+        document_id=req.id,
+        number=number,
+        created_at=created_dt,
+        sender="Главный склад",
+        receiver=branch_name or "Неизвестный филиал",
+        items=items,
+        comment=req.comment,
+        prepared_by=req.processed_by,
+        qr_value=f"REQ-{req.id}|{created_dt.isoformat()}",
+    )
+
+
+def build_shipment_waybill(shipment: DBShipment, db: Session) -> WaybillData:
+    branch = db.query(DBBranch).filter(DBBranch.id == shipment.to_branch_id).first()
+    branch_name = branch.name if branch else shipment.to_branch_id
+
+    shipment_items = (
+        db.query(DBShipmentItem)
+        .filter(DBShipmentItem.shipment_id == shipment.id)
+        .all()
+    )
+    items = [
+        WaybillItem(
+            name=item.item_name,
+            item_type=item.item_type,
+            quantity=item.quantity,
+        )
+        for item in shipment_items
+    ]
+
+    created_dt = shipment.created_at or now_almaty()
+    number = f"{created_dt.year}-{shipment.id[:8]}"
+
+    return WaybillData(
+        document_id=shipment.id,
+        number=number,
+        created_at=created_dt,
+        sender="Главный склад",
+        receiver=branch_name or "Неизвестный филиал",
+        items=items,
+        comment=None,
+        qr_value=f"SHIP-{shipment.id}|{created_dt.isoformat()}",
+    )
+
+
 def ensure_schema_patches():
     with engine.begin() as conn:
         insp = inspect(conn)
@@ -273,6 +478,12 @@ def ensure_schema_patches():
         conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS idx_dev_category_id ON public.medical_devices(category_id);"
         )
+
+        cols_reqs = [c["name"] for c in insp.get_columns("requisitions")]
+        if "shipment_id" not in cols_reqs:
+            conn.exec_driver_sql(
+                "ALTER TABLE public.requisitions ADD COLUMN shipment_id varchar"
+            )
 
 def ensure_medicines_category_fk():
     inspector = inspect(engine)
@@ -335,6 +546,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # Create tables on startup
@@ -615,7 +827,271 @@ async def list_branch_requisitions(
     return {"data": data}
 
 
-# Requisitions - admin endpoints
+# Warehouse requisitions - admin endpoints
+@app.get("/admin/warehouse/requests")
+async def list_warehouse_requests(
+    branch_id: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    date_from: Optional[datetime] = Query(default=None),
+    date_to: Optional[datetime] = Query(default=None),
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_admin_user(current_user)
+
+    query = (
+        db.query(DBRequisition)
+        .options(joinedload(DBRequisition.items))
+        .order_by(DBRequisition.created_at.desc())
+    )
+
+    if branch_id and branch_id.upper() != "ALL":
+        query = query.filter(DBRequisition.branch_id == branch_id)
+    if status and status.upper() != "ALL":
+        query = query.filter(DBRequisition.status == status)
+    if date_from:
+        query = query.filter(DBRequisition.created_at >= date_from)
+    if date_to:
+        query = query.filter(DBRequisition.created_at <= date_to)
+
+    requisitions = query.all()
+    branch_lookup: dict[str, str] = {}
+    if requisitions:
+        branch_ids = {req.branch_id for req in requisitions if req.branch_id}
+        if branch_ids:
+            rows = (
+                db.query(DBBranch.id, DBBranch.name)
+                .filter(DBBranch.id.in_(branch_ids))
+                .all()
+            )
+            branch_lookup = {row[0]: row[1] for row in rows}
+
+    data = [
+        serialize_warehouse_request(req, db, branch_lookup).model_dump(mode="json")
+        for req in requisitions
+    ]
+    return {"data": data}
+
+
+@app.get("/admin/warehouse/requests/{requisition_id}")
+async def get_warehouse_request_detail(
+    requisition_id: str,
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_admin_user(current_user)
+
+    requisition = (
+        db.query(DBRequisition)
+        .options(joinedload(DBRequisition.items))
+        .filter(DBRequisition.id == requisition_id)
+        .first()
+    )
+    if not requisition:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    data = serialize_warehouse_request(requisition, db).model_dump(mode="json")
+    return {"data": data}
+
+
+@app.post("/admin/warehouse/requests/{requisition_id}/accept")
+async def accept_warehouse_request(
+    requisition_id: str,
+    payload: AcceptWarehouseRequestIn = AcceptWarehouseRequestIn(),
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_admin_user(current_user)
+
+    payload = payload or AcceptWarehouseRequestIn()
+
+    with db.begin():
+        requisition = (
+            db.query(DBRequisition)
+            .options(joinedload(DBRequisition.items))
+            .filter(DBRequisition.id == requisition_id)
+            .with_for_update()
+            .first()
+        )
+
+        if not requisition:
+            raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+        if requisition.status == "accepted" and requisition.shipment_id:
+            return {"ok": True, "shipment_id": requisition.shipment_id}
+
+        if requisition.status not in {"pending", "approved"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Заявку можно принять только из статусов 'pending' или 'approved'",
+            )
+
+        item_checks = []
+        shortages_payload = []
+        has_shortage = False
+
+        for item in requisition.items:
+            if item.item_type == "medicine":
+                item_type = ItemType.medicine
+            elif item.item_type == "medical_device":
+                item_type = ItemType.medical_device
+            else:
+                item_type = None
+
+            if item_type is None:
+                available_qty = 0
+                name = None
+            else:
+                available_qty, name = get_main_available_qty(
+                    db, item_type, item.item_id
+                )
+
+            shortage = max(item.quantity - available_qty, 0)
+            has_shortage = has_shortage or shortage > 0
+            display_name = name or "Неизвестная позиция"
+            shortages_payload.append(
+                {
+                    "item_type": item.item_type,
+                    "item_id": item.item_id,
+                    "name": display_name,
+                    "requested_qty": item.quantity,
+                    "available_qty": available_qty,
+                    "shortage": shortage,
+                }
+            )
+            item_checks.append((item, item_type, display_name))
+
+        if has_shortage:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Недостаточно остатков на складе",
+                    "shortages": shortages_payload,
+                },
+            )
+
+        shipment_id = str(uuid.uuid4())
+        shipment = DBShipment(
+            id=shipment_id,
+            to_branch_id=requisition.branch_id,
+            status="created",
+        )
+        db.add(shipment)
+        db.flush()
+
+        for item, item_type, display_name in item_checks:
+            if item_type is not None:
+                try:
+                    decrement_stock(
+                        db,
+                        None,
+                        item_type,
+                        item.item_id,
+                        item.quantity,
+                    )
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "message": "Недостаточно остатков при резервировании",
+                            "shortages": shortages_payload,
+                        },
+                    ) from None
+
+            db.add(
+                DBShipmentItem(
+                    id=str(uuid.uuid4()),
+                    shipment_id=shipment_id,
+                    item_type=item.item_type,
+                    item_id=item.item_id,
+                    item_name=display_name,
+                    quantity=item.quantity,
+                )
+            )
+
+        requisition.status = "accepted"
+        requisition.shipment_id = shipment_id
+        requisition.processed_by = current_user.id
+        requisition.processed_at = datetime.utcnow()
+
+        if payload.comment:
+            if requisition.comment:
+                requisition.comment = (
+                    f"{requisition.comment}\n{payload.comment}"
+                )
+            else:
+                requisition.comment = payload.comment
+
+    return {"ok": True, "shipment_id": shipment_id}
+
+
+# Waybill exports
+@app.get("/admin/warehouse/requests/{requisition_id}/waybill")
+async def download_requisition_waybill(
+    requisition_id: str,
+    format: str = Query(default="pdf"),
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_admin_user(current_user)
+
+    if format.lower() != "pdf":
+        raise HTTPException(status_code=400, detail="Поддерживается только формат PDF")
+
+    requisition = (
+        db.query(DBRequisition)
+        .options(joinedload(DBRequisition.items))
+        .filter(DBRequisition.id == requisition_id)
+        .first()
+    )
+    if not requisition:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+
+    waybill = build_requisition_waybill(requisition, db)
+    pdf_bytes = render_waybill_pdf(waybill)
+    filename = safe_filename("waybill", requisition_id)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        },
+    )
+
+
+@app.get("/admin/warehouse/shipments/{shipment_id}/waybill")
+async def download_shipment_waybill(
+    shipment_id: str,
+    format: str = Query(default="pdf"),
+    db: Session = Depends(get_db),
+    current_user: DBUser = Depends(get_current_user),
+):
+    require_admin_user(current_user)
+
+    if format.lower() != "pdf":
+        raise HTTPException(status_code=400, detail="Поддерживается только формат PDF")
+
+    shipment = (
+        db.query(DBShipment)
+        .filter(DBShipment.id == shipment_id)
+        .first()
+    )
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Отправка не найдена")
+
+    waybill = build_shipment_waybill(shipment, db)
+    pdf_bytes = render_waybill_pdf(waybill)
+    filename = safe_filename("waybill", shipment_id)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}"
+        },
+    )
+
+
+# Requisitions - admin endpoints (legacy)
 @app.get("/admin/requisitions")
 async def list_admin_requisitions(
     branch_id: Optional[str] = Query(default=None),

@@ -14,59 +14,113 @@ interface ApiResponse<T> {
 }
 
 class ApiService {
+  private normalizeHeaders(headers?: HeadersInit): Record<string, string> {
+    const record: Record<string, string> = {}
+    if (!headers) return record
+    if (headers instanceof Headers) {
+      headers.forEach((value, key) => {
+        record[key] = value
+      })
+    } else if (Array.isArray(headers)) {
+      for (const [key, value] of headers) {
+        record[key] = value
+      }
+    } else {
+      Object.assign(record, headers as Record<string, string>)
+    }
+    return record
+  }
+
+  private prepareRequestOptions(
+    options: RequestInit = {},
+    { json = true, credentials = false }: { json?: boolean; credentials?: boolean } = {},
+  ): RequestInit {
+    const currentUser = storage.getCurrentUser()
+    const token = storage.getToken()
+
+    const extraHeaders = this.normalizeHeaders(options.headers)
+    const headers: Record<string, string> = {
+      ...(json ? { 'Content-Type': 'application/json' } : {}),
+      ...extraHeaders,
+    }
+
+    if (currentUser?.id) {
+      headers['X-User-Id'] = currentUser.id
+    }
+    if (currentUser?.role) {
+      headers['X-User-Role'] = currentUser.role
+    }
+    if (currentUser?.branchName) {
+      headers['X-User-Branch-Name'] = currentUser.branchName
+    }
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`
+    }
+
+    const init: RequestInit = {
+      ...options,
+      headers,
+    }
+    if (credentials) {
+      init.credentials = 'include'
+    }
+    return init
+  }
+
+  private async extractError(response: Response): Promise<string> {
+    let detail = `HTTP error! status: ${response.status}`
+    try {
+      const data = await response.clone().json()
+      if (data?.detail) {
+        detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)
+        return detail
+      }
+    } catch {
+      /* ignore */
+    }
+
+    try {
+      const text = await response.clone().text()
+      if (text) {
+        detail = text
+      }
+    } catch {
+      /* ignore */
+    }
+    return detail
+  }
+
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<ApiResponse<T>> {
     try {
-      const currentUser = storage.getCurrentUser();
-      const token = storage.getToken();
-
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        ...(options.headers as Record<string, string> | undefined),
-      };
-
-      if (currentUser?.id) {
-        headers['X-User-Id'] = currentUser.id;
-      }
-      if (currentUser?.role) {
-        headers['X-User-Role'] = currentUser.role;
-      }
-      if (currentUser?.branchName) {
-        headers['X-User-Branch-Name'] = currentUser.branchName;
-      }
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-
-      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-        headers,
-        ...options,
-      });
+      const requestOptions = this.prepareRequestOptions(options)
+      const response = await fetch(`${API_BASE_URL}${endpoint}`, requestOptions)
 
       if (!response.ok) {
-        let detail = `HTTP error! status: ${response.status}`;
-        try {
-          const maybeJson = await response.json();
-          if (maybeJson?.detail) {
-            detail = typeof maybeJson.detail === 'string'
-              ? maybeJson.detail
-              : JSON.stringify(maybeJson.detail);
-          }
-        } catch {
-          /* ignore */
-        }
-        throw new Error(detail);
+        throw new Error(await this.extractError(response))
       }
 
-      const text = await response.text();
-      const data = text ? JSON.parse(text) : null;
-      return { data };
+      const text = await response.text()
+      const data = text ? JSON.parse(text) : null
+      return { data }
     } catch (error) {
-      console.error(`API Error (${endpoint}):`, error);
-      return { error: error instanceof Error ? error.message : 'Unknown error' };
+      console.error(`API Error (${endpoint}):`, error)
+      return { error: error instanceof Error ? error.message : 'Unknown error' }
     }
+  }
+
+  async fetchBinary(endpoint: string, options: RequestInit = {}) {
+    const requestOptions = this.prepareRequestOptions(options, {
+      json: false,
+      credentials: true,
+    })
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, requestOptions)
+    if (!response.ok) {
+      throw new Error(await this.extractError(response))
+    }
+    return response
   }
 
   private normalizeData<T = any>(res: any): T {
@@ -672,6 +726,36 @@ class ApiService {
       method: 'POST',
       body: JSON.stringify(body),
     });
+  }
+
+  // Warehouse requests
+  getWarehouseRequests(params: { branch_id?: string; status?: string; date_from?: string; date_to?: string } = {}) {
+    const qs = new URLSearchParams(params as any).toString();
+    const suffix = qs ? `?${qs}` : '';
+    return this.request<{ data: any[] }>(`/admin/warehouse/requests${suffix}`);
+  }
+
+  getWarehouseRequestById(id: string) {
+    return this.request<{ data: any }>(`/admin/warehouse/requests/${id}`);
+  }
+
+  acceptWarehouseRequest(id: string, body?: { comment?: string }) {
+    const payload = body ? JSON.stringify(body) : '{}';
+    return this.request<{ ok: boolean; shipment_id: string }>(
+      `/admin/warehouse/requests/${id}/accept`,
+      {
+        method: 'POST',
+        body: payload,
+      },
+    );
+  }
+
+  async getWarehouseRequestWaybill(id: string) {
+    return this.fetchBinary(`/admin/warehouse/requests/${id}/waybill?format=pdf`);
+  }
+
+  async getShipmentWaybill(id: string) {
+    return this.fetchBinary(`/admin/warehouse/shipments/${id}/waybill?format=pdf`);
   }
 
   // Admin requisitions

@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { toast } from "@/hooks/use-toast";
 import { apiService } from "@/utils/api";
-import { Loader2, Plus, Truck, Package, AlertTriangle, RefreshCw, X, CheckCircle } from "lucide-react";
+import { Loader2, Plus, Truck, Package, AlertTriangle, RefreshCw, X, CheckCircle, FileDown, Printer } from "lucide-react";
 
 interface QtyInputProps {
   value: number;
@@ -235,6 +235,76 @@ const Shipments = () => {
       medicines: [{ medicine_id: '', quantity: 0 }],
       medical_devices: [{ device_id: '', quantity: 0 }]
     });
+  };
+
+  const downloadWaybill = async (shipmentId: string) => {
+    try {
+      const response = await apiService.getShipmentWaybill(shipmentId);
+      const blob = await response.blob();
+      const disposition = response.headers.get('content-disposition');
+      let filename = `waybill_${shipmentId}.pdf`;
+      if (disposition) {
+        const match = /filename="?([^";]+)"?/i.exec(disposition);
+        if (match?.[1]) {
+          filename = match[1];
+        }
+      }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (error) {
+      console.error('Error downloading waybill:', error);
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось скачать накладную',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const printWaybill = async (shipmentId: string) => {
+    try {
+      const response = await apiService.getShipmentWaybill(shipmentId);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const cleanup = () => {
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
+      };
+      const win = window.open(url);
+      if (win) {
+        win.onload = () => {
+          win.focus();
+          win.print();
+          cleanup();
+        };
+      } else {
+        const iframe = document.createElement('iframe');
+        iframe.style.position = 'fixed';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        iframe.src = url;
+        document.body.appendChild(iframe);
+        iframe.onload = () => {
+          iframe.contentWindow?.focus();
+          iframe.contentWindow?.print();
+          cleanup();
+          setTimeout(() => iframe.remove(), 4000);
+        };
+      }
+    } catch (error) {
+      console.error('Error preparing waybill for print:', error);
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось подготовить печать накладной',
+        variant: 'destructive',
+      });
+    }
   };
 
   const getStatusBadge = (status: string) => {
@@ -566,6 +636,24 @@ const Shipments = () => {
                       <p className="text-sm">{shipment.rejection_reason}</p>
                     </div>
                   )}
+                </div>
+                <div className="flex flex-wrap gap-3 border-t pt-4 mt-4">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => downloadWaybill(shipment.id)}
+                  >
+                    <FileDown className="h-4 w-4 mr-1" />
+                    Скачать накладную (PDF)
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => printWaybill(shipment.id)}
+                  >
+                    <Printer className="h-4 w-4 mr-1" />
+                    Печать
+                  </Button>
                 </div>
               </CardContent>
             </Card>
