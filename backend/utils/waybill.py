@@ -94,16 +94,38 @@ def _format_datetime(dt: datetime) -> datetime:
     return dt.astimezone(ALMATY_TZ)
 
 
-def _build_qr_drawing(value: str) -> Drawing:
+def _build_qr_drawing(value: str, size: int = 80) -> Drawing:
+    """
+    Возвращает Drawing с QR-кодом указанного размера (px).
+    Трансформацию задаём на самом виджете, а не через Drawing.add(..., transform=...).
+    """
+    # Если нет значения для QR — возвращаем пустой контейнер нужного размера
+    if not value:
+        return Drawing(size, size)
+
     widget = qr.QrCodeWidget(value)
-    bounds = widget.getBounds()
-    size = 32 * mm
-    width = bounds[2] - bounds[0]
-    height = bounds[3] - bounds[1]
-    drawing = Drawing(size, size)
-    transform = [size / width, 0, 0, size / height, 0, 0]
-    drawing.add(widget, transform=transform)
-    return drawing
+
+    # Получаем естественные границы QR и считаем коэффициенты масштабирования
+    x0, y0, x1, y1 = widget.getBounds()
+    w = (x1 - x0) or 1
+    h = (y1 - y0) or 1
+
+    sx = float(size) / float(w)
+    sy = float(size) / float(h)
+
+    # Применяем трансформацию к самому виджету (совместимо с разными версиями reportlab)
+    try:
+        widget.transform = [sx, 0, 0, sy, 0, 0]  # scale
+    except Exception:
+        try:
+            widget.scale(sx, sy)
+        except Exception:
+            pass  # в крайнем случае оставим без масштабирования
+
+    # Собираем Drawing требуемого размера и добавляем виджет без transform=
+    d = Drawing(size, size)
+    d.add(widget)
+    return d
 
 
 def render_waybill_pdf(data: WaybillData) -> bytes:
