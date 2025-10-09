@@ -58,13 +58,22 @@ class WaybillData:
 
 
 def _build_qr_drawing(value: str, size: int = 80) -> Drawing:
-    code = qr.QrCodeWidget(value)
+    """
+    Return a Drawing with a QR for 'value' scaled to 'size' x 'size'.
+    We scale/translate on the Drawing, not on QrCodeWidget.
+    """
+    code = qr.QrCodeWidget(value or "")
     x1, y1, x2, y2 = code.getBounds()
-    width = x2 - x1
-    height = y2 - y1
-    scale = float(size) / float(max(width, height) or 1)
-    d = Drawing(size, size)
-    code.transform = (scale, 0, 0, scale, 0, 0)
+    w, h = (x2 - x1), (y2 - y1)
+    if w <= 0 or h <= 0:
+        w = h = 1.0
+    scale = float(size) / max(w, h)
+
+    # Move origin so QR’s lower-left corner is at (0,0), then scale to target size.
+    # transform = [sx, 0, 0, sy, tx, ty]
+    tx = -x1 * scale
+    ty = -y1 * scale
+    d = Drawing(size, size, transform=[scale, 0, 0, scale, tx, ty])
     d.add(code)
     return d
 

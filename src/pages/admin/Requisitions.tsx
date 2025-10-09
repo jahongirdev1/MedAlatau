@@ -3,7 +3,6 @@ import { apiService } from '@/utils/api';
 import { toast } from '@/hooks/use-toast';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
@@ -60,7 +59,7 @@ type WarehouseRequest = {
 const STATUS_LABELS: Record<string, string> = {
   pending: 'В ожидании',
   approved: 'Одобрена',
-  accepted: 'Отгружена',
+  accepted: 'Принята',
   rejected: 'Отклонена',
 };
 
@@ -84,7 +83,6 @@ const AdminRequisitions: React.FC = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [selectedRequest, setSelectedRequest] = useState<WarehouseRequest | null>(null);
   const [accepting, setAccepting] = useState(false);
-  const [acceptComment, setAcceptComment] = useState('');
   const [lastShipmentId, setLastShipmentId] = useState<string | null>(null);
 
   const [filters, setFilters] = useState({ branch: 'ALL', status: 'ALL', dateFrom: '', dateTo: '' });
@@ -246,7 +244,6 @@ const AdminRequisitions: React.FC = () => {
   const closeDetail = useCallback(() => {
     setDetailOpen(false);
     setSelectedRequest(null);
-    setAcceptComment('');
     setLastShipmentId(null);
   }, []);
 
@@ -271,11 +268,7 @@ const AdminRequisitions: React.FC = () => {
 
     setAccepting(true);
     try {
-      const comment = acceptComment.trim();
-      const res = await apiService.acceptWarehouseRequest(
-        selectedRequest.id,
-        comment ? { comment } : undefined,
-      );
+      const res = await apiService.acceptWarehouseRequest(selectedRequest.id);
       if (res.error) {
         throw new Error(res.error);
       }
@@ -283,10 +276,8 @@ const AdminRequisitions: React.FC = () => {
       const shipmentId = payload?.shipment_id ?? null;
       setLastShipmentId(shipmentId);
       toast({
-        title: 'Отгрузка создана',
-        description: 'Заявка принята и отгрузка сформирована',
+        title: 'Заявка принята',
       });
-      setAcceptComment('');
       await loadRequests();
       await refreshDetail(selectedRequest.id);
     } catch (error) {
@@ -300,7 +291,7 @@ const AdminRequisitions: React.FC = () => {
     } finally {
       setAccepting(false);
     }
-  }, [acceptComment, getShortageTotal, loadRequests, parseErrorMessage, refreshDetail, selectedRequest]);
+  }, [getShortageTotal, loadRequests, parseErrorMessage, refreshDetail, selectedRequest]);
 
   const downloadShipmentWaybill = useCallback(
     async (shipmentId: string) => {
@@ -562,9 +553,9 @@ const AdminRequisitions: React.FC = () => {
               {(selectedRequest.status === 'accepted' || lastShipmentId) && (
                 <Alert className="bg-emerald-50 border-emerald-200 text-emerald-900">
                   <CheckCircle2 className="h-4 w-4" />
-                  <AlertTitle>Отгрузка создана</AlertTitle>
+                  <AlertTitle>Заявка принята</AlertTitle>
                   <AlertDescription>
-                    Номер отгрузки: {(selectedRequest.shipment_id ?? lastShipmentId ?? '').slice(0, 8)}
+                    Номер отправки: {(selectedRequest.shipment_id ?? lastShipmentId ?? '').slice(0, 8)}
                   </AlertDescription>
                 </Alert>
               )}
@@ -615,19 +606,6 @@ const AdminRequisitions: React.FC = () => {
                 </div>
               )}
 
-              {selectedRequest.status !== 'accepted' && (
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-700">
-                    Комментарий к отгрузке (опционально)
-                  </label>
-                  <Textarea
-                    placeholder="Укажите дополнительные инструкции для отгрузки"
-                    value={acceptComment}
-                    onChange={(event) => setAcceptComment(event.target.value)}
-                  />
-                </div>
-              )}
-
               <div className="flex flex-wrap gap-3 justify-end">
                 <Button type="button" variant="secondary" onClick={closeDetail} disabled={accepting}>
                   Закрыть
@@ -643,14 +621,14 @@ const AdminRequisitions: React.FC = () => {
                   }
                   title={
                     !hasEnoughStock(selectedRequest)
-                      ? 'Недостаточно остатков для отгрузки'
+                      ? 'Недостаточно остатков'
                       : selectedRequest.status === 'accepted'
-                        ? 'Отгрузка уже создана'
+                        ? 'Заявка уже принята'
                         : undefined
                   }
                 >
                   {accepting && <Loader2 className="h-4 w-4 animate-spin" />}
-                  Принять и отгрузить
+                  Принять
                 </Button>
               </div>
 
