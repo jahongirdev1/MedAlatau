@@ -1056,6 +1056,57 @@ async def download_requisition_waybill(
     )
 
 
+def _serialize_shipment_with_items(shipment: DBShipment, db: Session) -> dict:
+    items = (
+        db.execute(
+            select(DBShipmentItem).where(DBShipmentItem.shipment_id == shipment.id)
+        )
+        .scalars()
+        .all()
+    )
+
+    def _resolve_name(item: DBShipmentItem) -> str:
+        if item.item_type == "medicine":
+            medicine = db.get(DBMedicine, item.item_id)
+            return medicine.name if medicine else item.item_name
+        device = db.get(DBMedicalDevice, item.item_id)
+        return device.name if device else item.item_name
+
+    payload_items: List[dict[str, str | int]] = []
+    total_quantity = 0
+    for item in items:
+        qty = int(item.quantity or 0)
+        total_quantity += qty
+        payload_items.append({"name": _resolve_name(item), "quantity": qty})
+
+    created_at = shipment.created_at or datetime.utcnow()
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=ZoneInfo("UTC"))
+
+    branch = db.get(DBBranch, shipment.to_branch_id) if shipment.to_branch_id else None
+
+    return {
+        "id": shipment.id,
+        "status": shipment.status,
+        "from_branch": "Главный склад",
+        "to_branch": branch.name if branch else "",
+        "to_branch_id": shipment.to_branch_id,
+        "created_at": created_at.astimezone(ALMATY_TZ).strftime("%d.%m.%Y %H:%M"),
+        "items": payload_items,
+        "total_quantity": total_quantity,
+        "rejection_reason": shipment.rejection_reason,
+    }
+
+
+@app.get("/admin/warehouse/shipments/{shipment_id}")
+def get_admin_shipment(shipment_id: str, db: Session = Depends(get_db)):
+    shipment = db.get(DBShipment, shipment_id)
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    payload = _serialize_shipment_with_items(shipment, db)
+    return {"data": payload}
+
+
 @app.get("/admin/warehouse/shipments/{shipment_id}/waybill")
 def download_shipment_waybill(
     shipment_id: str,
@@ -1066,47 +1117,13 @@ def download_shipment_waybill(
     if not shipment:
         raise HTTPException(status_code=404, detail="Shipment not found")
 
-    items = (
-        db.execute(
-            select(DBShipmentItem).where(DBShipmentItem.shipment_id == shipment_id)
-        )
-        .scalars()
-        .all()
-    )
-
-    def _name(item: DBShipmentItem) -> str:
-        if item.item_type == "medicine":
-            medicine = db.get(DBMedicine, item.item_id)
-            return medicine.name if medicine else item.item_name
-        device = db.get(DBMedicalDevice, item.item_id)
-        return device.name if device else item.item_name
-
-    created_at = shipment.created_at or datetime.utcnow()
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=ZoneInfo("UTC"))
-
-    branch = db.get(DBBranch, shipment.to_branch_id) if shipment.to_branch_id else None
-
-    payload = {
-        "id": shipment.id,
-        "from_branch": "Главный склад",
-        "to_branch": branch.name if branch else "",
-        "created_at": created_at.astimezone(ALMATY).isoformat(),
-        "items": [
-            {
-                "name": _name(item),
-                "type": item.item_type,
-                "quantity": item.quantity,
-            }
-            for item in items
-        ],
-    }
+    payload = _serialize_shipment_with_items(shipment, db)
 
     if format.lower() == "json":
         return {"data": payload}
 
     pdf_bytes = render_waybill_pdf(payload)
-    filename = f"waybill_{shipment.id}.pdf"
+    filename = safe_filename("waybill", shipment.id)
     return Response(
         pdf_bytes,
         media_type="application/pdf",

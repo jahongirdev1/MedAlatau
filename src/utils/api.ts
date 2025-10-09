@@ -434,6 +434,17 @@ class ApiService {
     return res;
   }
 
+  async getShipmentById(id: string) {
+    const res = await this.request<any>(`/admin/warehouse/shipments/${id}`);
+    if (res.error) {
+      throw new Error(res.error);
+    }
+    if (res.data && res.data.data) {
+      return res.data.data;
+    }
+    return res.data;
+  }
+
   async createShipment(shipment: any) {
     return this.request<any>('/shipments', {
       method: 'POST',
@@ -480,6 +491,22 @@ class ApiService {
       method: 'PUT',
       body: JSON.stringify({ status: 'pending' }),
     });
+  }
+
+  async downloadShipmentWaybill(id: string) {
+    const url = `${API_BASE_URL}/admin/warehouse/shipments/${id}/waybill?format=pdf`;
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `waybill_${id}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(link.href);
   }
 
   // Notifications
