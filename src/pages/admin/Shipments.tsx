@@ -325,35 +325,6 @@ const Shipments = () => {
     }
   };
 
-  const onShip = async (shipment: any) => {
-    try {
-      setBusy(true);
-      setBusyShipmentId(shipment.id);
-      await apiService.shipShipment(shipment.id);
-      toast({ title: 'Отгружено' });
-      await refetch();
-    } catch (error: any) {
-      const detail = error?.response?.data?.detail ?? error?.response?.data;
-      const message = detail?.message ?? error?.message ?? 'Не удалось отгрузить';
-      const insufficient = detail?.insufficient;
-      if (Array.isArray(insufficient) && insufficient.length) {
-        const text = insufficient
-          .map((item: any) => `${item.name}: нужно ${item.requested}, есть ${item.available}`)
-          .join('\n');
-        toast({
-          title: 'Недостаточно остатков',
-          description: <div className="whitespace-pre-line">{text}</div>,
-          variant: 'destructive',
-        });
-      } else {
-        toast({ title: 'Ошибка', description: message, variant: 'destructive' });
-      }
-    } finally {
-      setBusy(false);
-      setBusyShipmentId(null);
-    }
-  };
-
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'pending':
@@ -693,16 +664,6 @@ const Shipments = () => {
                     >
                       <CheckCircle className="h-4 w-4 mr-1" />
                       Принять
-                    </Button>
-                  )}
-                  {shipment.status === 'accepted' && (
-                    <Button
-                      size="sm"
-                      onClick={() => onShip(shipment)}
-                      disabled={busy && busyShipmentId === shipment.id}
-                    >
-                      <Truck className="h-4 w-4 mr-1" />
-                      Отгрузить
                     </Button>
                   )}
                   <Button
