@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { toast } from "@/hooks/use-toast";
 import { apiService } from "@/utils/api";
-import { Loader2, Plus, Truck, Package, AlertTriangle, RefreshCw, X, CheckCircle, FileDown, Printer } from "lucide-react";
+import { Loader2, Plus, Truck, RefreshCw, X, CheckCircle, FileDown } from "lucide-react";
 
 interface QtyInputProps {
   value: number;
@@ -58,13 +58,11 @@ const Shipments = () => {
   const [devices, setDevices] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
   const [pageLoading, setPageLoading] = useState(true);
-  const [loading, setLoading] = useState(false);
-  const [printing, setPrinting] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [downloadShipmentId, setDownloadShipmentId] = useState<string | null>(null);
-  const [printingShipmentId, setPrintingShipmentId] = useState<string | null>(null);
-  const [busyShipmentId, setBusyShipmentId] = useState<string | null>(null);
+  const [detailsId, setDetailsId] = useState<string | null>(null);
+  const [details, setDetails] = useState<any | null>(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+  const [accepting, setAccepting] = useState(false);
 
   type SortOrder = 'new' | 'old';
   type StatusFilter = 'all' | 'accepted' | 'declined';
@@ -247,19 +245,34 @@ const Shipments = () => {
     });
   };
 
-  const downloadWaybill = async (shipment: any) => {
+  const handleOpenDetails = React.useCallback(async (shipmentId: string) => {
+    setDetailsId(shipmentId);
+    setLoadingDetails(true);
     try {
-      setLoading(true);
-      setDownloadShipmentId(shipment.id);
-      const blob = await apiService.getShipmentWaybillPDF(shipment.id);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `waybill_${shipment.id}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      const data = await apiService.getShipmentById(shipmentId);
+      setDetails(data);
+    } catch (error) {
+      console.error('Error loading shipment details:', error);
+      toast({
+        title: 'Ошибка',
+        description: 'Не удалось загрузить детали заявки',
+        variant: 'destructive',
+      });
+      setDetails(null);
+      setDetailsId(null);
+    } finally {
+      setLoadingDetails(false);
+    }
+  }, [toast]);
+
+  const closeDetails = React.useCallback(() => {
+    setDetailsId(null);
+    setDetails(null);
+  }, []);
+
+  const handleDownloadWaybill = React.useCallback(async (shipmentId: string) => {
+    try {
+      await apiService.downloadShipmentWaybill(shipmentId);
     } catch (error) {
       console.error('Error downloading waybill:', error);
       toast({
@@ -267,63 +280,23 @@ const Shipments = () => {
         description: 'Не удалось скачать накладную',
         variant: 'destructive',
       });
-    } finally {
-      setLoading(false);
-      setDownloadShipmentId(null);
     }
-  };
+  }, [toast]);
 
-  const printWaybill = async (shipment: any) => {
-    let url: string | null = null;
+  const handleAcceptShipment = React.useCallback(async (shipmentId: string) => {
     try {
-      setPrinting(true);
-      setPrintingShipmentId(shipment.id);
-      const blob = await apiService.getShipmentWaybillPDF(shipment.id);
-      url = URL.createObjectURL(blob);
-      const win = window.open(url);
-      if (!win) {
-        throw new Error('Popup blocked');
-      }
-      win.addEventListener('load', () => {
-        win.print();
-      });
-      win.addEventListener('afterprint', () => {
-        if (url) {
-          URL.revokeObjectURL(url);
-        }
-        win.close();
-      });
-    } catch (error) {
-      console.error('Error preparing waybill for print:', error);
-      toast({
-        title: 'Ошибка',
-        description: 'Не удалось подготовить печать накладной',
-        variant: 'destructive',
-      });
-    } finally {
-      setPrinting(false);
-      setPrintingShipmentId(null);
-      if (url) {
-        URL.revokeObjectURL(url);
-      }
-    }
-  };
-
-  const onAccept = async (shipment: any) => {
-    try {
-      setBusy(true);
-      setBusyShipmentId(shipment.id);
-      await apiService.acceptShipment(shipment.id);
+      setAccepting(true);
+      await apiService.acceptShipment(shipmentId);
       toast({ title: 'Заявка принята' });
+      closeDetails();
       await refetch();
     } catch (error: any) {
       const message = error?.message ?? 'Не удалось принять заявку';
       toast({ title: 'Ошибка', description: message, variant: 'destructive' });
     } finally {
-      setBusy(false);
-      setBusyShipmentId(null);
+      setAccepting(false);
     }
-  };
+  }, [closeDetails, refetch, toast]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -656,33 +629,12 @@ const Shipments = () => {
                   )}
                 </div>
                 <div className="flex flex-wrap gap-3 border-t pt-4 mt-4">
-                  {shipment.status === 'pending' && (
-                    <Button
-                      size="sm"
-                      onClick={() => onAccept(shipment)}
-                      disabled={busy && busyShipmentId === shipment.id}
-                    >
-                      <CheckCircle className="h-4 w-4 mr-1" />
-                      Принять
-                    </Button>
-                  )}
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => downloadWaybill(shipment)}
-                    disabled={loading && downloadShipmentId === shipment.id}
+                    onClick={() => handleOpenDetails(shipment.id)}
                   >
-                    <FileDown className="h-4 w-4 mr-1" />
-                    Скачать накладную (PDF)
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => printWaybill(shipment)}
-                    disabled={printing && printingShipmentId === shipment.id}
-                  >
-                    <Printer className="h-4 w-4 mr-1" />
-                    Печать
+                    Подробнее
                   </Button>
                 </div>
               </CardContent>
@@ -690,6 +642,88 @@ const Shipments = () => {
           ))}
         </div>
       )}
+
+      <Dialog
+        open={!!detailsId}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeDetails();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Заявка № {details?.id ?? detailsId}</DialogTitle>
+            <DialogDescription>{details?.created_at}</DialogDescription>
+          </DialogHeader>
+
+          {loadingDetails ? (
+            <div className="py-8 text-center text-muted-foreground">
+              <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin" />
+              Загрузка…
+            </div>
+          ) : details ? (
+            <div className="space-y-3">
+              <div>
+                <b>Откуда:</b> {details.from_branch}
+              </div>
+              <div>
+                <b>Куда:</b> {details.to_branch}
+              </div>
+              <div className="flex items-center gap-2">
+                <b>Статус:</b> {getStatusBadge(details.status)}
+              </div>
+              {typeof details.total_quantity === 'number' && (
+                <div>
+                  <b>Всего единиц:</b> {details.total_quantity}
+                </div>
+              )}
+              <div className="mt-2">
+                <b>Позиции:</b>
+                {Array.isArray(details.items) && details.items.length > 0 ? (
+                  <ul className="list-disc space-y-1 pl-6">
+                    {details.items.map((item: any, idx: number) => (
+                      <li key={idx}>
+                        {item.name} — {item.quantity} шт.
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-sm text-muted-foreground">Позиции не указаны</p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-muted-foreground">
+              Данные недоступны
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => details && handleDownloadWaybill(details.id)}
+              disabled={!details || loadingDetails}
+            >
+              <FileDown className="mr-2 h-4 w-4" />
+              Скачать накладную (PDF)
+            </Button>
+            {details?.status === 'pending' && (
+              <Button
+                onClick={() => details && handleAcceptShipment(details.id)}
+                disabled={!details || accepting || loadingDetails}
+              >
+                {accepting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <CheckCircle className="mr-2 h-4 w-4" />
+                )}
+                Принять
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
