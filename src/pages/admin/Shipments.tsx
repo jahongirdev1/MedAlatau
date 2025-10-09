@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { toast } from "@/hooks/use-toast";
 import { apiService } from "@/utils/api";
-import { Loader2, Plus, Truck, RefreshCw, X, CheckCircle, FileDown } from "lucide-react";
+import { Loader2, Plus, Truck, Package, AlertTriangle, RefreshCw, X, CheckCircle } from "lucide-react";
 
 interface QtyInputProps {
   value: number;
@@ -57,12 +57,8 @@ const Shipments = () => {
   const [medicines, setMedicines] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
-  const [pageLoading, setPageLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [detailsId, setDetailsId] = useState<string | null>(null);
-  const [details, setDetails] = useState<any | null>(null);
-  const [loadingDetails, setLoadingDetails] = useState(false);
-  const [accepting, setAccepting] = useState(false);
 
   type SortOrder = 'new' | 'old';
   type StatusFilter = 'all' | 'accepted' | 'declined';
@@ -76,8 +72,12 @@ const Shipments = () => {
     medical_devices: [{ device_id: '', quantity: 0 }]
   });
 
-  const fetchData = React.useCallback(async () => {
-    setPageLoading(true);
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    setLoading(true);
     try {
       const [shipmentsRes, medicinesRes, devicesRes, branchesRes] = await Promise.all([
         apiService.getShipments(),
@@ -98,17 +98,9 @@ const Shipments = () => {
         variant: "destructive",
       });
     } finally {
-      setPageLoading(false);
+      setLoading(false);
     }
-  }, []);
-
-  useEffect(() => {
-    fetchData();
-  }, [fetchData]);
-
-  const refetch = React.useCallback(async () => {
-    await fetchData();
-  }, [fetchData]);
+  };
 
   const addMedicineItem = () => {
     setFormData({
@@ -177,7 +169,7 @@ const Shipments = () => {
 
       const response = await apiService.createShipment(shipmentData);
       if (response.data) {
-        await refetch();
+        await fetchData();
         resetForm();
         setDialogOpen(false);
         toast({
@@ -199,7 +191,7 @@ const Shipments = () => {
     try {
       const response = await apiService.retryShipment(shipmentId);
       if (response.data || !response.error) {
-        await refetch();
+        await fetchData();
         toast({
           title: "Отправка повторена",
           description: "Отправка отправлена повторно",
@@ -221,7 +213,7 @@ const Shipments = () => {
     try {
       const response = await apiService.cancelShipment(shipmentId);
       if (response.data || !response.error) {
-        await refetch();
+        await fetchData();
         toast({
           title: "Отправка отменена",
           description: "Отправка успешно отменена",
@@ -244,59 +236,6 @@ const Shipments = () => {
       medical_devices: [{ device_id: '', quantity: 0 }]
     });
   };
-
-  const handleOpenDetails = React.useCallback(async (shipmentId: string) => {
-    setDetailsId(shipmentId);
-    setLoadingDetails(true);
-    try {
-      const data = await apiService.getShipmentById(shipmentId);
-      setDetails(data);
-    } catch (error) {
-      console.error('Error loading shipment details:', error);
-      toast({
-        title: 'Ошибка',
-        description: 'Не удалось загрузить детали заявки',
-        variant: 'destructive',
-      });
-      setDetails(null);
-      setDetailsId(null);
-    } finally {
-      setLoadingDetails(false);
-    }
-  }, [toast]);
-
-  const closeDetails = React.useCallback(() => {
-    setDetailsId(null);
-    setDetails(null);
-  }, []);
-
-  const handleDownloadWaybill = React.useCallback(async (shipmentId: string) => {
-    try {
-      await apiService.downloadShipmentWaybill(shipmentId);
-    } catch (error) {
-      console.error('Error downloading waybill:', error);
-      toast({
-        title: 'Ошибка',
-        description: 'Не удалось скачать накладную',
-        variant: 'destructive',
-      });
-    }
-  }, [toast]);
-
-  const handleAcceptShipment = React.useCallback(async (shipmentId: string) => {
-    try {
-      setAccepting(true);
-      await apiService.acceptShipment(shipmentId);
-      toast({ title: 'Заявка принята' });
-      closeDetails();
-      await refetch();
-    } catch (error: any) {
-      const message = error?.message ?? 'Не удалось принять заявку';
-      toast({ title: 'Ошибка', description: message, variant: 'destructive' });
-    } finally {
-      setAccepting(false);
-    }
-  }, [closeDetails, refetch, toast]);
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -358,7 +297,7 @@ const Shipments = () => {
     return list;
   }, [shipments, sortOrder, statusFilter]);
 
-  if (pageLoading) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="h-8 w-8 animate-spin" />
@@ -628,102 +567,11 @@ const Shipments = () => {
                     </div>
                   )}
                 </div>
-                <div className="flex flex-wrap gap-3 border-t pt-4 mt-4">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => handleOpenDetails(shipment.id)}
-                  >
-                    Подробнее
-                  </Button>
-                </div>
               </CardContent>
             </Card>
           ))}
         </div>
       )}
-
-      <Dialog
-        open={!!detailsId}
-        onOpenChange={(open) => {
-          if (!open) {
-            closeDetails();
-          }
-        }}
-      >
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>Заявка № {details?.id ?? detailsId}</DialogTitle>
-            <DialogDescription>{details?.created_at}</DialogDescription>
-          </DialogHeader>
-
-          {loadingDetails ? (
-            <div className="py-8 text-center text-muted-foreground">
-              <Loader2 className="mx-auto mb-2 h-6 w-6 animate-spin" />
-              Загрузка…
-            </div>
-          ) : details ? (
-            <div className="space-y-3">
-              <div>
-                <b>Откуда:</b> {details.from_branch}
-              </div>
-              <div>
-                <b>Куда:</b> {details.to_branch}
-              </div>
-              <div className="flex items-center gap-2">
-                <b>Статус:</b> {getStatusBadge(details.status)}
-              </div>
-              {typeof details.total_quantity === 'number' && (
-                <div>
-                  <b>Всего единиц:</b> {details.total_quantity}
-                </div>
-              )}
-              <div className="mt-2">
-                <b>Позиции:</b>
-                {Array.isArray(details.items) && details.items.length > 0 ? (
-                  <ul className="list-disc space-y-1 pl-6">
-                    {details.items.map((item: any, idx: number) => (
-                      <li key={idx}>
-                        {item.name} — {item.quantity} шт.
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="text-sm text-muted-foreground">Позиции не указаны</p>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="py-8 text-center text-muted-foreground">
-              Данные недоступны
-            </div>
-          )}
-
-          <DialogFooter className="gap-2">
-            <Button
-              variant="outline"
-              onClick={() => details && handleDownloadWaybill(details.id)}
-              disabled={!details || loadingDetails}
-            >
-              <FileDown className="mr-2 h-4 w-4" />
-              Скачать накладную (PDF)
-            </Button>
-            {details?.status === 'pending' && (
-              <Button
-                onClick={() => details && handleAcceptShipment(details.id)}
-                disabled={!details || accepting || loadingDetails}
-              >
-                {accepting ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <CheckCircle className="mr-2 h-4 w-4" />
-                )}
-                Принять
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };
