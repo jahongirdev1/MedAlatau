@@ -57,8 +57,14 @@ const Shipments = () => {
   const [medicines, setMedicines] = useState<any[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
   const [branches, setBranches] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [printing, setPrinting] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [downloadShipmentId, setDownloadShipmentId] = useState<string | null>(null);
+  const [printingShipmentId, setPrintingShipmentId] = useState<string | null>(null);
+  const [busyShipmentId, setBusyShipmentId] = useState<string | null>(null);
 
   type SortOrder = 'new' | 'old';
   type StatusFilter = 'all' | 'accepted' | 'declined';
@@ -72,12 +78,8 @@ const Shipments = () => {
     medical_devices: [{ device_id: '', quantity: 0 }]
   });
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
-    setLoading(true);
+  const fetchData = React.useCallback(async () => {
+    setPageLoading(true);
     try {
       const [shipmentsRes, medicinesRes, devicesRes, branchesRes] = await Promise.all([
         apiService.getShipments(),
@@ -98,9 +100,17 @@ const Shipments = () => {
         variant: "destructive",
       });
     } finally {
-      setLoading(false);
+      setPageLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const refetch = React.useCallback(async () => {
+    await fetchData();
+  }, [fetchData]);
 
   const addMedicineItem = () => {
     setFormData({
@@ -169,7 +179,7 @@ const Shipments = () => {
 
       const response = await apiService.createShipment(shipmentData);
       if (response.data) {
-        await fetchData();
+        await refetch();
         resetForm();
         setDialogOpen(false);
         toast({
@@ -191,7 +201,7 @@ const Shipments = () => {
     try {
       const response = await apiService.retryShipment(shipmentId);
       if (response.data || !response.error) {
-        await fetchData();
+        await refetch();
         toast({
           title: "Отправка повторена",
           description: "Отправка отправлена повторно",
@@ -213,7 +223,7 @@ const Shipments = () => {
     try {
       const response = await apiService.cancelShipment(shipmentId);
       if (response.data || !response.error) {
-        await fetchData();
+        await refetch();
         toast({
           title: "Отправка отменена",
           description: "Отправка успешно отменена",
@@ -237,26 +247,19 @@ const Shipments = () => {
     });
   };
 
-  const downloadWaybill = async (shipmentId: string) => {
+  const downloadWaybill = async (shipment: any) => {
     try {
-      const response = await apiService.getShipmentWaybill(shipmentId);
-      const blob = await response.blob();
-      const disposition = response.headers.get('content-disposition');
-      let filename = `waybill_${shipmentId}.pdf`;
-      if (disposition) {
-        const match = /filename="?([^";]+)"?/i.exec(disposition);
-        if (match?.[1]) {
-          filename = match[1];
-        }
-      }
+      setLoading(true);
+      setDownloadShipmentId(shipment.id);
+      const blob = await apiService.getShipmentWaybillPDF(shipment.id);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = filename;
+      link.download = `waybill_${shipment.id}.pdf`;
       document.body.appendChild(link);
       link.click();
-      document.body.removeChild(link);
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      link.remove();
+      URL.revokeObjectURL(url);
     } catch (error) {
       console.error('Error downloading waybill:', error);
       toast({
@@ -264,39 +267,32 @@ const Shipments = () => {
         description: 'Не удалось скачать накладную',
         variant: 'destructive',
       });
+    } finally {
+      setLoading(false);
+      setDownloadShipmentId(null);
     }
   };
 
-  const printWaybill = async (shipmentId: string) => {
+  const printWaybill = async (shipment: any) => {
+    let url: string | null = null;
     try {
-      const response = await apiService.getShipmentWaybill(shipmentId);
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const cleanup = () => {
-        setTimeout(() => URL.revokeObjectURL(url), 4000);
-      };
+      setPrinting(true);
+      setPrintingShipmentId(shipment.id);
+      const blob = await apiService.getShipmentWaybillPDF(shipment.id);
+      url = URL.createObjectURL(blob);
       const win = window.open(url);
-      if (win) {
-        win.onload = () => {
-          win.focus();
-          win.print();
-          cleanup();
-        };
-      } else {
-        const iframe = document.createElement('iframe');
-        iframe.style.position = 'fixed';
-        iframe.style.width = '0';
-        iframe.style.height = '0';
-        iframe.style.border = '0';
-        iframe.src = url;
-        document.body.appendChild(iframe);
-        iframe.onload = () => {
-          iframe.contentWindow?.focus();
-          iframe.contentWindow?.print();
-          cleanup();
-          setTimeout(() => iframe.remove(), 4000);
-        };
+      if (!win) {
+        throw new Error('Popup blocked');
       }
+      win.addEventListener('load', () => {
+        win.print();
+      });
+      win.addEventListener('afterprint', () => {
+        if (url) {
+          URL.revokeObjectURL(url);
+        }
+        win.close();
+      });
     } catch (error) {
       console.error('Error preparing waybill for print:', error);
       toast({
@@ -304,6 +300,57 @@ const Shipments = () => {
         description: 'Не удалось подготовить печать накладной',
         variant: 'destructive',
       });
+    } finally {
+      setPrinting(false);
+      setPrintingShipmentId(null);
+      if (url) {
+        URL.revokeObjectURL(url);
+      }
+    }
+  };
+
+  const onAccept = async (shipment: any) => {
+    try {
+      setBusy(true);
+      setBusyShipmentId(shipment.id);
+      await apiService.acceptShipment(shipment.id);
+      toast({ title: 'Заявка принята' });
+      await refetch();
+    } catch (error: any) {
+      const message = error?.message ?? 'Не удалось принять заявку';
+      toast({ title: 'Ошибка', description: message, variant: 'destructive' });
+    } finally {
+      setBusy(false);
+      setBusyShipmentId(null);
+    }
+  };
+
+  const onShip = async (shipment: any) => {
+    try {
+      setBusy(true);
+      setBusyShipmentId(shipment.id);
+      await apiService.shipShipment(shipment.id);
+      toast({ title: 'Отгружено' });
+      await refetch();
+    } catch (error: any) {
+      const detail = error?.response?.data?.detail ?? error?.response?.data;
+      const message = detail?.message ?? error?.message ?? 'Не удалось отгрузить';
+      const insufficient = detail?.insufficient;
+      if (Array.isArray(insufficient) && insufficient.length) {
+        const text = insufficient
+          .map((item: any) => `${item.name}: нужно ${item.requested}, есть ${item.available}`)
+          .join('\n');
+        toast({
+          title: 'Недостаточно остатков',
+          description: <div className="whitespace-pre-line">{text}</div>,
+          variant: 'destructive',
+        });
+      } else {
+        toast({ title: 'Ошибка', description: message, variant: 'destructive' });
+      }
+    } finally {
+      setBusy(false);
+      setBusyShipmentId(null);
     }
   };
 
@@ -367,7 +414,7 @@ const Shipments = () => {
     return list;
   }, [shipments, sortOrder, statusFilter]);
 
-  if (loading) {
+  if (pageLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="h-8 w-8 animate-spin" />
@@ -638,10 +685,31 @@ const Shipments = () => {
                   )}
                 </div>
                 <div className="flex flex-wrap gap-3 border-t pt-4 mt-4">
+                  {shipment.status === 'pending' && (
+                    <Button
+                      size="sm"
+                      onClick={() => onAccept(shipment)}
+                      disabled={busy && busyShipmentId === shipment.id}
+                    >
+                      <CheckCircle className="h-4 w-4 mr-1" />
+                      Принять
+                    </Button>
+                  )}
+                  {shipment.status === 'accepted' && (
+                    <Button
+                      size="sm"
+                      onClick={() => onShip(shipment)}
+                      disabled={busy && busyShipmentId === shipment.id}
+                    >
+                      <Truck className="h-4 w-4 mr-1" />
+                      Отгрузить
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => downloadWaybill(shipment.id)}
+                    onClick={() => downloadWaybill(shipment)}
+                    disabled={loading && downloadShipmentId === shipment.id}
                   >
                     <FileDown className="h-4 w-4 mr-1" />
                     Скачать накладную (PDF)
@@ -649,7 +717,8 @@ const Shipments = () => {
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => printWaybill(shipment.id)}
+                    onClick={() => printWaybill(shipment)}
+                    disabled={printing && printingShipmentId === shipment.id}
                   >
                     <Printer className="h-4 w-4 mr-1" />
                     Печать

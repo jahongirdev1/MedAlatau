@@ -90,6 +90,26 @@ class ApiService {
     return detail
   }
 
+  private async throwDetailedError(response: Response): Promise<never> {
+    const message = await this.extractError(response)
+    const error: any = new Error(message)
+    try {
+      const data = await response.clone().json()
+      error.response = { data }
+    } catch {
+      try {
+        const text = await response.clone().text()
+        if (text) {
+          error.response = { data: text }
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    error.status = response.status
+    throw error
+  }
+
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}
@@ -422,9 +442,23 @@ class ApiService {
   }
 
   async acceptShipment(shipmentId: string) {
-    return this.request<any>(`/shipments/${shipmentId}/accept`, {
-      method: 'POST',
-    });
+    const url = `${API_BASE_URL}/admin/warehouse/shipments/${shipmentId}/accept`
+    const requestOptions = this.prepareRequestOptions({ method: 'POST' }, { credentials: true })
+    const response = await fetch(url, requestOptions)
+    if (!response.ok) {
+      await this.throwDetailedError(response)
+    }
+    return await response.json()
+  }
+
+  async shipShipment(shipmentId: string) {
+    const url = `${API_BASE_URL}/admin/warehouse/shipments/${shipmentId}/ship`
+    const requestOptions = this.prepareRequestOptions({ method: 'POST' }, { credentials: true })
+    const response = await fetch(url, requestOptions)
+    if (!response.ok) {
+      await this.throwDetailedError(response)
+    }
+    return await response.json()
   }
 
   async rejectShipment(shipmentId: string, reason: string) {
@@ -754,8 +788,14 @@ class ApiService {
     return this.fetchBinary(`/admin/warehouse/requests/${id}/waybill?format=pdf`);
   }
 
-  async getShipmentWaybill(id: string) {
-    return this.fetchBinary(`/admin/warehouse/shipments/${id}/waybill?format=pdf`);
+  async getShipmentWaybillPDF(id: string) {
+    const url = `${API_BASE_URL}/admin/warehouse/shipments/${id}/waybill?format=pdf`
+    const requestOptions = this.prepareRequestOptions({}, { json: false, credentials: true })
+    const response = await fetch(url, requestOptions)
+    if (!response.ok) {
+      await this.throwDetailedError(response)
+    }
+    return await response.blob()
   }
 
   // Admin requisitions
