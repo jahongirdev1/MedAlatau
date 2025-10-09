@@ -305,16 +305,8 @@ const AdminRequisitions: React.FC = () => {
   const downloadShipmentWaybill = useCallback(
     async (shipmentId: string) => {
       try {
-        const response = await apiService.getShipmentWaybill(shipmentId);
-        const blob = await response.blob();
-        const disposition = response.headers.get('content-disposition');
-        let filename = `waybill_${shipmentId}.pdf`;
-        if (disposition) {
-          const match = /filename="?([^";]+)"?/i.exec(disposition);
-          if (match?.[1]) {
-            filename = match[1];
-          }
-        }
+        const blob = await apiService.getShipmentWaybillPDF(shipmentId);
+        const filename = `waybill_${shipmentId}.pdf`;
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
@@ -338,8 +330,7 @@ const AdminRequisitions: React.FC = () => {
   const printShipmentWaybill = useCallback(
     async (shipmentId: string) => {
       try {
-        const response = await apiService.getShipmentWaybill(shipmentId);
-        const blob = await response.blob();
+        const blob = await apiService.getShipmentWaybillPDF(shipmentId);
         const url = URL.createObjectURL(blob);
         const cleanup = () => {
           setTimeout(() => URL.revokeObjectURL(url), 4000);

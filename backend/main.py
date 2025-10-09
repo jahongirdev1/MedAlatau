@@ -71,7 +71,8 @@ except ImportError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 log = logging.getLogger("reports")
 
-ALMATY_TZ = ZoneInfo("Asia/Almaty")
+ALMATY = ZoneInfo("Asia/Almaty")
+ALMATY_TZ = ALMATY
 MAIN_BRANCH_ID = None
 
 
@@ -386,38 +387,6 @@ def build_requisition_waybill(req: DBRequisition, db: Session) -> WaybillData:
     )
 
 
-def build_shipment_waybill(shipment: DBShipment, db: Session) -> WaybillData:
-    branch = db.query(DBBranch).filter(DBBranch.id == shipment.to_branch_id).first()
-    branch_name = branch.name if branch else shipment.to_branch_id
-
-    shipment_items = (
-        db.query(DBShipmentItem)
-        .filter(DBShipmentItem.shipment_id == shipment.id)
-        .all()
-    )
-    items = [
-        WaybillItem(
-            name=item.item_name,
-            item_type=item.item_type,
-            quantity=item.quantity,
-        )
-        for item in shipment_items
-    ]
-
-    created_dt = shipment.created_at or now_almaty()
-    number = f"{created_dt.year}-{shipment.id[:8]}"
-
-    return WaybillData(
-        document_id=shipment.id,
-        number=number,
-        created_at=created_dt,
-        sender="Главный склад",
-        receiver=branch_name or "Неизвестный филиал",
-        items=items,
-        comment=None,
-        qr_value=f"SHIP-{shipment.id}|{created_dt.isoformat()}",
-    )
-
 
 def ensure_schema_patches():
     with engine.begin() as conn:
@@ -539,10 +508,38 @@ def ensure_arrivals_schema():
 # Create FastAPI app
 app = FastAPI(title="Warehouse Management System")
 
+
+ALLOWED_ORIGINS = [
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    # accept any 192.168.x.x:8080 during LAN dev
+]
+
+
+def _origin_is_allowed(origin: str) -> bool:
+    if not origin:
+        return False
+    if origin in ALLOWED_ORIGINS:
+        return True
+    return origin.startswith("http://192.168.") and origin.endswith(":8080")
+
+
+class DynamicCORSMiddleware(CORSMiddleware):
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers") or [])
+            origin = headers.get(b"origin", b"").decode()
+            if _origin_is_allowed(origin):
+                self.allow_origins = [origin]
+            else:
+                self.allow_origins = ALLOWED_ORIGINS
+        return await super().__call__(scope, receive, send)
+
+
 # CORS middleware
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
+    DynamicCORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1060,35 +1057,144 @@ async def download_requisition_waybill(
 
 
 @app.get("/admin/warehouse/shipments/{shipment_id}/waybill")
-async def download_shipment_waybill(
+def download_shipment_waybill(
     shipment_id: str,
-    format: str = Query(default="pdf"),
+    format: str = "pdf",
     db: Session = Depends(get_db),
-    current_user: DBUser = Depends(get_current_user),
 ):
-    require_admin_user(current_user)
-
-    if format.lower() != "pdf":
-        raise HTTPException(status_code=400, detail="Поддерживается только формат PDF")
-
-    shipment = (
-        db.query(DBShipment)
-        .filter(DBShipment.id == shipment_id)
-        .first()
-    )
+    shipment = db.get(DBShipment, shipment_id)
     if not shipment:
-        raise HTTPException(status_code=404, detail="Отправка не найдена")
+        raise HTTPException(status_code=404, detail="Shipment not found")
 
-    waybill = build_shipment_waybill(shipment, db)
-    pdf_bytes = render_waybill_pdf(waybill)
-    filename = safe_filename("waybill", shipment_id)
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f"attachment; filename={filename}"
-        },
+    items = (
+        db.execute(
+            select(DBShipmentItem).where(DBShipmentItem.shipment_id == shipment_id)
+        )
+        .scalars()
+        .all()
     )
+
+    def _name(item: DBShipmentItem) -> str:
+        if item.item_type == "medicine":
+            medicine = db.get(DBMedicine, item.item_id)
+            return medicine.name if medicine else item.item_name
+        device = db.get(DBMedicalDevice, item.item_id)
+        return device.name if device else item.item_name
+
+    created_at = shipment.created_at or datetime.utcnow()
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=ZoneInfo("UTC"))
+
+    branch = db.get(DBBranch, shipment.to_branch_id) if shipment.to_branch_id else None
+
+    payload = {
+        "id": shipment.id,
+        "from_branch": "Главный склад",
+        "to_branch": branch.name if branch else "",
+        "created_at": created_at.astimezone(ALMATY).isoformat(),
+        "items": [
+            {
+                "name": _name(item),
+                "type": item.item_type,
+                "quantity": item.quantity,
+            }
+            for item in items
+        ],
+    }
+
+    if format.lower() == "json":
+        return {"data": payload}
+
+    pdf_bytes = render_waybill_pdf(payload)
+    filename = f"waybill_{shipment.id}.pdf"
+    return Response(
+        pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.post("/admin/warehouse/shipments/{shipment_id}/accept")
+def accept_shipment(shipment_id: str, db: Session = Depends(get_db)):
+    shipment = db.get(DBShipment, shipment_id)
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    if shipment.status != "pending":
+        raise HTTPException(status_code=400, detail="Only pending can be accepted")
+
+    shipment.status = "accepted"
+    shipment.accepted_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/admin/warehouse/shipments/{shipment_id}/ship")
+def ship_shipment(shipment_id: str, db: Session = Depends(get_db)):
+    shipment = db.get(DBShipment, shipment_id)
+    if not shipment:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+    if shipment.status != "accepted":
+        raise HTTPException(status_code=400, detail="Only accepted can be shipped")
+
+    items = (
+        db.execute(
+            select(DBShipmentItem).where(DBShipmentItem.shipment_id == shipment_id)
+        )
+        .scalars()
+        .all()
+    )
+
+    insufficient: List[dict[str, int | str]] = []
+
+    def avail_medicine(item_id: str) -> int:
+        medicine = db.get(DBMedicine, item_id)
+        if not medicine or medicine.branch_id:
+            return 0
+        return int(medicine.quantity or 0)
+
+    def avail_device(item_id: str) -> int:
+        device = db.get(DBMedicalDevice, item_id)
+        if not device or device.branch_id:
+            return 0
+        return int(device.quantity or 0)
+
+    for item in items:
+        if item.item_type == "medicine":
+            available = avail_medicine(item.item_id)
+        else:
+            available = avail_device(item.item_id)
+        if available < item.quantity:
+            insufficient.append(
+                {
+                    "name": item.item_name,
+                    "requested": item.quantity,
+                    "available": available,
+                }
+            )
+
+    if insufficient:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Недостаточно остатков",
+                "insufficient": insufficient,
+            },
+        )
+
+    for item in items:
+        if item.item_type == "medicine":
+            medicine = db.get(DBMedicine, item.item_id)
+            if medicine:
+                medicine.quantity = (medicine.quantity or 0) - item.quantity
+        else:
+            device = db.get(DBMedicalDevice, item.item_id)
+            if device:
+                device.quantity = (device.quantity or 0) - item.quantity
+
+    shipment.status = "shipped"
+    shipment.shipped_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
 
 
 # Requisitions - admin endpoints (legacy)
@@ -1656,82 +1762,6 @@ async def create_shipment(shipment_data: dict, db: Session = Depends(get_db)):
         
         db.commit()
         return {"message": "Shipment created successfully"}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.post("/shipments/{shipment_id}/accept")
-async def accept_shipment(shipment_id: str, db: Session = Depends(get_db)):
-    try:
-        shipment = db.query(DBShipment).filter(DBShipment.id == shipment_id).first()
-        if not shipment:
-            raise HTTPException(status_code=404, detail="Shipment not found")
-        
-        # Get shipment items
-        items = db.query(DBShipmentItem).filter(DBShipmentItem.shipment_id == shipment_id).all()
-        
-        for item in items:
-            if item.item_type == "medicine":
-                # Decrease main warehouse quantity
-                main_medicine = db.query(DBMedicine).filter(
-                    DBMedicine.id == item.item_id,
-                    DBMedicine.branch_id.is_(None)
-                ).first()
-                if main_medicine:
-                    main_medicine.quantity -= item.quantity
-                
-                # Add to branch
-                branch_medicine = db.query(DBMedicine).filter(
-                    DBMedicine.name == item.item_name,
-                    DBMedicine.branch_id == shipment.to_branch_id
-                ).first()
-                
-                if branch_medicine:
-                    branch_medicine.quantity += item.quantity
-                else:
-                    new_medicine = DBMedicine(
-                        id=str(uuid.uuid4()),
-                        name=item.item_name,
-                        category_id=main_medicine.category_id if main_medicine else None,
-                        purchase_price=main_medicine.purchase_price if main_medicine else 0,
-                        sell_price=main_medicine.sell_price if main_medicine else 0,
-                        quantity=item.quantity,
-                        branch_id=shipment.to_branch_id
-                    )
-                    db.add(new_medicine)
-            
-            elif item.item_type == "medical_device":
-                # Decrease main warehouse quantity
-                main_device = db.query(DBMedicalDevice).filter(
-                    DBMedicalDevice.id == item.item_id,
-                    DBMedicalDevice.branch_id.is_(None)
-                ).first()
-                if main_device:
-                    main_device.quantity -= item.quantity
-                
-                # Add to branch
-                branch_device = db.query(DBMedicalDevice).filter(
-                    DBMedicalDevice.name == item.item_name,
-                    DBMedicalDevice.branch_id == shipment.to_branch_id
-                ).first()
-                
-                if branch_device:
-                    branch_device.quantity += item.quantity
-                else:
-                    new_device = DBMedicalDevice(
-                        id=str(uuid.uuid4()),
-                        name=item.item_name,
-                        category_id=main_device.category_id if main_device else None,
-                        purchase_price=main_device.purchase_price if main_device else 0,
-                        sell_price=main_device.sell_price if main_device else 0,
-                        quantity=item.quantity,
-                        branch_id=shipment.to_branch_id
-                    )
-                    db.add(new_device)
-        
-        shipment.status = "accepted"
-        db.commit()
-        return {"message": "Shipment accepted"}
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
