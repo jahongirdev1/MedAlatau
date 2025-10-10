@@ -49,6 +49,8 @@ import traceback
 import logging
 import re
 from io import BytesIO
+from utils.waybill_html import render_waybill_html
+from utils.waybill_pdf import render_waybill_pdf
 try:
     from openpyxl import Workbook
     from openpyxl.utils import get_column_letter
@@ -61,6 +63,48 @@ log = logging.getLogger("reports")
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 MAIN_BRANCH_ID = None
+
+
+def _fmt_dt(dt) -> str:
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ALMATY_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def load_waybill_payload(db: Session, shipment_id: str) -> dict:
+    sh = db.get(DBShipment, shipment_id)
+    if not sh:
+        raise HTTPException(status_code=404, detail="Shipment not found")
+
+    to_branch = db.get(DBBranch, getattr(sh, "to_branch_id"))
+    to_branch_name = getattr(to_branch, "name", "—")
+    from_branch_name = "Главный склад"
+
+    items = (
+        db.execute(
+            select(DBShipmentItem)
+            .where(DBShipmentItem.shipment_id == shipment_id)
+            .order_by(DBShipmentItem.id)
+        )
+        .scalars()
+        .all()
+    )
+    rows = [
+        {"name": it.item_name, "quantity": int(it.quantity or 0)}
+        for it in items
+    ]
+    total_qty = sum(r["quantity"] for r in rows)
+
+    return {
+        "id": str(sh.id),
+        "created_at": _fmt_dt(getattr(sh, "created_at", None)),
+        "from_branch": from_branch_name,
+        "to_branch": to_branch_name,
+        "items": rows,
+        "total_quantity": total_qty,
+    }
 
 
 def to_almaty(dt: datetime | str | None) -> str:
@@ -1280,6 +1324,29 @@ async def update_shipment_status(shipment_id: str, status_data: dict, db: Sessio
     shipment.status = status_data["status"]
     db.commit()
     return {"message": "Shipment status updated"}
+
+
+@app.get("/admin/warehouse/shipments/{shipment_id}/waybill")
+def download_shipment_waybill(
+    shipment_id: str,
+    format: str = Query("pdf", description="pdf | html"),
+    db: Session = Depends(get_db),
+):
+    payload = load_waybill_payload(db, shipment_id)
+
+    if format.lower() == "html":
+        html = render_waybill_html(payload)
+        return Response(html, media_type="text/html; charset=utf-8")
+
+    pdf = render_waybill_pdf(payload)
+    return Response(
+        pdf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename=waybill_{payload["id"]}.pdf'
+        },
+    )
+
 
 # Notification endpoints
 @app.get("/notifications")

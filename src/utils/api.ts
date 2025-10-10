@@ -394,6 +394,27 @@ class ApiService {
     });
   }
 
+  async downloadShipmentWaybill(id: string) {
+    const res = await fetch(`${API_BASE_URL}/admin/warehouse/shipments/${id}/waybill?format=pdf`, {
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `waybill_${id}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  openShipmentWaybillPrint(id: string) {
+    const url = `${API_BASE_URL}/admin/warehouse/shipments/${id}/waybill?format=html`;
+    window.open(url, '_blank', 'noopener');
+  }
+
   // Notifications
   async getNotifications(branchId: string) {
     return this.request<any[]>(`/notifications?branch_id=${branchId}`);

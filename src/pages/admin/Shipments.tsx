@@ -496,16 +496,32 @@ const Shipments = () => {
           {viewShipments.map((shipment) => (
             <Card key={shipment.id}>
               <CardHeader>
-                <div className="flex justify-between items-start">
-                  <div>
-                    <CardTitle className="text-lg">
-                      Отправка в {getBranchName(shipment.to_branch_id)}
-                    </CardTitle>
-                    <p className="text-sm text-muted-foreground">
-                      Создано: {new Date(shipment.created_at).toLocaleString('ru-RU')}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <CardTitle className="text-lg">
+                        Отправка в {getBranchName(shipment.to_branch_id)}
+                      </CardTitle>
+                      <p className="text-sm text-muted-foreground">
+                        Создано: {new Date(shipment.created_at).toLocaleString('ru-RU')}
+                      </p>
+                    </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <div className="flex gap-2">
+                      <button
+                        className="px-3 py-1 rounded border text-sm"
+                        onClick={() => apiService.downloadShipmentWaybill(shipment.id)}
+                        title="Скачать PDF"
+                      >
+                        Скачать накладную (PDF)
+                      </button>
+                      <button
+                        className="px-3 py-1 rounded border text-sm"
+                        onClick={() => apiService.openShipmentWaybillPrint(shipment.id)}
+                        title="Печать"
+                      >
+                        Печать
+                      </button>
+                    </div>
                     {getStatusBadge(shipment.status)}
                     {shipment.status === 'pending' && (
                       <Button
