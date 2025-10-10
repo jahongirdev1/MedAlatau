@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Response, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Response, Request, APIRouter
 from starlette.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, joinedload
@@ -36,6 +36,8 @@ from database import (
     Notification as DBNotification,
     Requisition as DBRequisition,
     RequisitionItem as DBRequisitionItem,
+    PayrollEntry,
+    ExpenseEntry,
 )
 from schemas import *
 from typing import List, Optional, Iterable, Callable, Literal
@@ -77,6 +79,20 @@ def to_almaty(dt: datetime | str | None) -> str:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=ZoneInfo("UTC"))
     return dt.astimezone(ALMATY_TZ).strftime("%d.%m.%Y %H:%M")
+
+
+def _parse_date_ymd(s: str | None):
+    if not s:
+        return None
+    return datetime.fromisoformat(s).replace(tzinfo=None)
+
+
+def _to_local_str(dt: datetime | None) -> str:
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(ALMATY_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def humanize_items(raw) -> str:
@@ -2943,6 +2959,268 @@ async def get_calendar_dispensing_day(
         return {"data": result}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+tracking = APIRouter(prefix="/admin/tracking", tags=["tracking"])
+
+
+@tracking.get("/payroll")
+def list_payroll(
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    branch_id: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    q = select(PayrollEntry).order_by(PayrollEntry.date.desc())
+    try:
+        if date_from:
+            q = q.where(PayrollEntry.date >= _parse_date_ymd(date_from))
+        if date_to:
+            q = q.where(PayrollEntry.date <= _parse_date_ymd(date_to))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат даты")
+
+    if branch_id == "warehouse":
+        q = q.where(PayrollEntry.branch_id.is_(None))
+    elif branch_id:
+        q = q.where(PayrollEntry.branch_id == branch_id)
+
+    rows = db.execute(q).scalars().all()
+    return {
+        "data": [
+            {
+                "id": r.id,
+                "first_name": r.first_name,
+                "last_name": r.last_name,
+                "role": r.role,
+                "branch_id": r.branch_id,
+                "amount": r.amount,
+                "date": _to_local_str(r.date),
+            }
+            for r in rows
+        ]
+    }
+
+
+@tracking.post("/payroll")
+def create_payroll(item: dict, db: Session = Depends(get_db)):
+    first_name = item.get("first_name", "").strip()
+    last_name = item.get("last_name", "").strip()
+    role = item.get("role", "").strip()
+
+    if not first_name or not last_name or not role:
+        raise HTTPException(status_code=400, detail="Заполните все обязательные поля")
+
+    try:
+        amount = float(item.get("amount", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Сумма должна быть числом")
+
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Сумма должна быть больше 0")
+
+    try:
+        parsed_date = _parse_date_ymd(item.get("date")) if item.get("date") else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат даты")
+
+    record = PayrollEntry(
+        first_name=first_name,
+        last_name=last_name,
+        role=role,
+        branch_id=(
+            None
+            if item.get("branch_id") in [None, "", "warehouse"]
+            else item.get("branch_id")
+        ),
+        amount=amount,
+        date=parsed_date or datetime.utcnow(),
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {"ok": True, "id": record.id}
+
+
+@tracking.get("/expenses")
+def list_expenses(
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
+    branch_id: str | None = Query(None),
+    db: Session = Depends(get_db),
+):
+    q = select(ExpenseEntry).order_by(ExpenseEntry.date.desc())
+    try:
+        if date_from:
+            q = q.where(ExpenseEntry.date >= _parse_date_ymd(date_from))
+        if date_to:
+            q = q.where(ExpenseEntry.date <= _parse_date_ymd(date_to))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат даты")
+
+    if branch_id == "warehouse":
+        q = q.where(ExpenseEntry.branch_id.is_(None))
+    elif branch_id:
+        q = q.where(ExpenseEntry.branch_id == branch_id)
+
+    rows = db.execute(q).scalars().all()
+    return {
+        "data": [
+            {
+                "id": r.id,
+                "title": r.title,
+                "description": r.description,
+                "branch_id": r.branch_id,
+                "amount": r.amount,
+                "date": _to_local_str(r.date),
+            }
+            for r in rows
+        ]
+    }
+
+
+@tracking.post("/expenses")
+def create_expense(item: dict, db: Session = Depends(get_db)):
+    title = item.get("title", "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Введите название расхода")
+
+    try:
+        amount = float(item.get("amount", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Сумма должна быть числом")
+
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Сумма должна быть больше 0")
+
+    try:
+        parsed_date = _parse_date_ymd(item.get("date")) if item.get("date") else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат даты")
+
+    record = ExpenseEntry(
+        title=title,
+        description=item.get("description"),
+        branch_id=(
+            None
+            if item.get("branch_id") in [None, "", "warehouse"]
+            else item.get("branch_id")
+        ),
+        amount=amount,
+        date=parsed_date or datetime.utcnow(),
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    return {"ok": True, "id": record.id}
+
+
+@tracking.get("/report")
+def tracking_report(
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    branch_id: str | None = Query(None),
+    kind: str = Query("combined"),
+    db: Session = Depends(get_db),
+):
+    try:
+        start = _parse_date_ymd(date_from)
+        end = _parse_date_ymd(date_to)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат даты")
+
+    if not start or not end:
+        raise HTTPException(status_code=400, detail="Bad dates")
+
+    q_p = select(func.coalesce(func.sum(PayrollEntry.amount), 0.0)).where(
+        and_(PayrollEntry.date >= start, PayrollEntry.date <= end)
+    )
+    if branch_id == "warehouse":
+        q_p = q_p.where(PayrollEntry.branch_id.is_(None))
+    elif branch_id:
+        q_p = q_p.where(PayrollEntry.branch_id == branch_id)
+    payroll_sum = float(db.execute(q_p).scalar() or 0)
+
+    q_e = select(func.coalesce(func.sum(ExpenseEntry.amount), 0.0)).where(
+        and_(ExpenseEntry.date >= start, ExpenseEntry.date <= end)
+    )
+    if branch_id == "warehouse":
+        q_e = q_e.where(ExpenseEntry.branch_id.is_(None))
+    elif branch_id:
+        q_e = q_e.where(ExpenseEntry.branch_id == branch_id)
+    expenses_sum = float(db.execute(q_e).scalar() or 0)
+
+    sent_value = 0.0
+    if branch_id not in (None, "", "warehouse"):
+        si = DBShipmentItem
+        sh = DBShipment
+        m = DBMedicine
+        md = DBMedicalDevice
+
+        q_m = (
+            select(
+                func.coalesce(
+                    func.sum(
+                        si.quantity * func.coalesce(m.purchase_price, 0.0)
+                    ),
+                    0.0,
+                )
+            )
+            .select_from(si)
+            .join(sh, sh.id == si.shipment_id)
+            .join(m, m.id == si.item_id, isouter=True)
+            .where(
+                sh.to_branch_id == branch_id,
+                sh.created_at >= start,
+                sh.created_at <= end,
+                si.item_type == "medicine",
+            )
+        )
+
+        q_md = (
+            select(
+                func.coalesce(
+                    func.sum(
+                        si.quantity * func.coalesce(md.purchase_price, 0.0)
+                    ),
+                    0.0,
+                )
+            )
+            .select_from(si)
+            .join(sh, sh.id == si.shipment_id)
+            .join(md, md.id == si.item_id, isouter=True)
+            .where(
+                sh.to_branch_id == branch_id,
+                sh.created_at >= start,
+                sh.created_at <= end,
+                si.item_type == "medical_device",
+            )
+        )
+
+        sent_value = float(db.execute(q_m).scalar() or 0) + float(
+            db.execute(q_md).scalar() or 0
+        )
+
+    if kind == "payroll":
+        total = payroll_sum
+    elif kind == "expenses":
+        total = expenses_sum
+    else:
+        total = payroll_sum + expenses_sum
+
+    return {
+        "period": {"from": date_from, "to": date_to},
+        "branch_id": branch_id,
+        "kind": kind,
+        "payroll_sum": payroll_sum,
+        "expenses_sum": expenses_sum,
+        "sent_value": sent_value,
+        "total": total,
+    }
+
+
+app.include_router(tracking)
+
 
 if __name__ == "__main__":
     import uvicorn

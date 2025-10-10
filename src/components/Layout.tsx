@@ -4,7 +4,8 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { storage } from '@/utils/storage';
 import GlobalTitleLock from '@/components/GlobalTitleLock';
-import { 
+import type { LucideIcon } from 'lucide-react';
+import {
   Home,
   Package,
   Users,
@@ -18,12 +19,29 @@ import {
   Truck,
   User,
   Clock,
-  ClipboardList
+  ClipboardList,
+  Wallet,
+  Receipt,
+  BarChart3,
 } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
 }
+
+type MenuItem = {
+  path: string;
+  icon: LucideIcon;
+  label: string;
+};
+
+type MenuGroup = {
+  type: 'group';
+  label: string;
+  items: MenuItem[];
+};
+
+type MenuEntry = MenuItem | MenuGroup;
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
@@ -76,7 +94,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     }
   };
 
-  const adminMenuItems = [
+  const adminMenuItems: MenuEntry[] = [
     { path: '/admin', icon: Home, label: 'Главная' },
     { path: '/admin/branches', icon: Building2, label: 'Филиалы' },
     { path: '/admin/medicine-categories', icon: FileText, label: 'Категории лекарств' },
@@ -86,6 +104,15 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/admin/arrivals', icon: Truck, label: 'Поступления' },
     { path: '/admin/shipments', icon: ArrowLeftRight, label: 'Отправки' },
     { path: '/admin/requisitions', icon: ClipboardList, label: 'Заявки' },
+    {
+      type: 'group',
+      label: 'Отслеживание',
+      items: [
+        { path: '/admin/tracking/payroll', icon: Wallet, label: 'Зарплата' },
+        { path: '/admin/tracking/expenses', icon: Receipt, label: 'Расходы' },
+        { path: '/admin/tracking/report', icon: BarChart3, label: 'Отчёт' },
+      ],
+    },
     { path: '/admin/employees', icon: Users, label: 'Сотрудники' },
     { path: '/admin/patients', icon: UserCheck, label: 'Пациенты' },
     { path: '/admin/reports/warehouse', icon: FileText, label: 'Отчёты склада' },
@@ -95,7 +122,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/admin/profile', icon: User, label: 'Личный кабинет' },
   ];
 
-  const branchMenuItems = [
+  const branchMenuItems: MenuItem[] = [
     { path: '/branch', icon: Home, label: 'Главная' },
     { path: '/branch/arrivals', icon: ArrowLeftRight, label: 'Поступления' },
     { path: '/branch/medical-devices', icon: Package, label: 'ИМН' },
@@ -108,7 +135,28 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/branch/reports', icon: FileText, label: 'Отчеты' },
   ];
 
-  const menuItems = currentUser?.role === 'admin' ? adminMenuItems : branchMenuItems;
+  const menuItems: MenuEntry[] = currentUser?.role === 'admin'
+    ? adminMenuItems
+    : branchMenuItems;
+
+  const renderLink = (item: MenuItem, isSub = false, groupKey?: string) => {
+    const Icon = item.icon;
+    const isActive = location.pathname === item.path;
+    const baseClass = 'flex items-center py-3 text-gray-700 hover:bg-blue-50 hover:text-blue-600 transition-colors';
+    const padding = sidebarOpen ? (isSub ? 'pl-8 pr-4' : 'px-4') : 'px-4';
+    const activeClass = isActive ? 'bg-blue-100 text-blue-600 border-r-2 border-blue-600' : '';
+
+    return (
+      <Link
+        key={`${groupKey ?? 'item'}-${item.path}`}
+        to={item.path}
+        className={`${baseClass} ${padding} ${activeClass}`}
+      >
+        <Icon className="h-5 w-5" />
+        {sidebarOpen && <span className="ml-3">{item.label}</span>}
+      </Link>
+    );
+  };
 
   if (!currentUser) {
     return (
@@ -141,21 +189,22 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
         <nav className="mt-6">
           {menuItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = location.pathname === item.path;
-            
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                className={`flex items-center px-4 py-3 text-gray-700 hover:bg-blue-50 hover:text-blue-600 transition-colors ${
-                  isActive ? 'bg-blue-100 text-blue-600 border-r-2 border-blue-600' : ''
-                }`}
-              >
-                <Icon className="h-5 w-5" />
-                {sidebarOpen && <span className="ml-3">{item.label}</span>}
-              </Link>
-            );
+            if ('items' in item) {
+              return (
+                <div key={`group-${item.label}`} className="mt-4">
+                  {sidebarOpen && (
+                    <p className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                      {item.label}
+                    </p>
+                  )}
+                  <div className="space-y-1">
+                    {item.items.map((subItem) => renderLink(subItem, true, item.label))}
+                  </div>
+                </div>
+              );
+            }
+
+            return renderLink(item);
           })}
         </nav>
       </div>

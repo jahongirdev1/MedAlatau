@@ -30,6 +30,9 @@ import Analytics from "@/pages/admin/Analytics";
 import MedicalDevicesCategories from "@/pages/admin/MedicalDevicesCategories";
 import MedicineCategories from "@/pages/admin/MedicineCategories";
 import AdminRequisitions from "@/pages/admin/Requisitions";
+import AdminPayroll from "@/pages/admin/tracking/Payroll";
+import AdminExpenses from "@/pages/admin/tracking/Expenses";
+import AdminTrackingReport from "@/pages/admin/tracking/Report";
 
 // Branch pages
 import BranchDashboard from "@/pages/branch/BranchDashboard";
@@ -94,6 +97,9 @@ const App = () => {
             <Route path="/admin/medical-devices-categories" element={<ProtectedRoute requiredRole="admin"><MedicalDevicesCategories /></ProtectedRoute>} />
             <Route path="/admin/shipments" element={<ProtectedRoute requiredRole="admin"><Shipments /></ProtectedRoute>} />
             <Route path="/admin/requisitions" element={<ProtectedRoute requiredRole="admin"><AdminRequisitions /></ProtectedRoute>} />
+            <Route path="/admin/tracking/payroll" element={<ProtectedRoute requiredRole="admin"><AdminPayroll /></ProtectedRoute>} />
+            <Route path="/admin/tracking/expenses" element={<ProtectedRoute requiredRole="admin"><AdminExpenses /></ProtectedRoute>} />
+            <Route path="/admin/tracking/report" element={<ProtectedRoute requiredRole="admin"><AdminTrackingReport /></ProtectedRoute>} />
             <Route path="/admin/reports" element={<ProtectedRoute requiredRole="admin"><Reports /></ProtectedRoute>} />
             <Route path="/admin/reports/warehouse" element={<ProtectedRoute requiredRole="admin"><ReportsWarehouse /></ProtectedRoute>} />
             <Route path="/admin/reports/branches" element={<ProtectedRoute requiredRole="admin"><ReportsBranches /></ProtectedRoute>} />

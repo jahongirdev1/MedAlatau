@@ -157,7 +157,7 @@ class Shipment(Base):
 
 class ShipmentItem(Base):
     __tablename__ = "shipment_items"
-    
+
     id = Column(String, primary_key=True)
     shipment_id = Column(String, ForeignKey("shipments.id"), nullable=False)
     item_type = Column(String, nullable=False)  # medicine or device
@@ -207,6 +207,32 @@ class RequisitionItem(Base):
     quantity = Column(Integer, nullable=False)
 
     requisition = relationship("Requisition", back_populates="items")
+
+
+# --- Tracking models: payroll & expenses ---
+class PayrollEntry(Base):
+    __tablename__ = "payroll_entries"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    first_name = Column(String, nullable=False)
+    last_name = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    branch_id = Column(String, ForeignKey("branches.id"), nullable=True)
+    amount = Column(Float, nullable=False)
+    date = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class ExpenseEntry(Base):
+    __tablename__ = "expense_entries"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    branch_id = Column(String, ForeignKey("branches.id"), nullable=True)
+    amount = Column(Float, nullable=False)
+    date = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
 # Database dependency
 def get_db():

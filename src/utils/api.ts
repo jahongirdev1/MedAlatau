@@ -747,6 +747,72 @@ class ApiService {
     return { data: this.normalizeData(res) };
   }
 
+  // Tracking: payroll
+  async getPayroll(params: { date_from?: string; date_to?: string; branch_id?: string } = {}) {
+    const qs = new URLSearchParams();
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    if (params.branch_id) qs.set('branch_id', params.branch_id);
+    const query = qs.toString();
+    const suffix = query ? `?${query}` : '';
+    return this.request<{ data: any[] }>(`/admin/tracking/payroll${suffix}`);
+  }
+
+  async createPayroll(body: {
+    first_name: string;
+    last_name: string;
+    role: string;
+    branch_id?: string | null;
+    amount: number;
+    date: string;
+  }) {
+    return this.request('/admin/tracking/payroll', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Tracking: expenses
+  async getExpenses(params: { date_from?: string; date_to?: string; branch_id?: string } = {}) {
+    const qs = new URLSearchParams();
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    if (params.branch_id) qs.set('branch_id', params.branch_id);
+    const query = qs.toString();
+    const suffix = query ? `?${query}` : '';
+    return this.request<{ data: any[] }>(`/admin/tracking/expenses${suffix}`);
+  }
+
+  async createExpense(body: {
+    title: string;
+    description?: string;
+    branch_id?: string | null;
+    amount: number;
+    date: string;
+  }) {
+    return this.request('/admin/tracking/expenses', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Tracking: report
+  async getTrackingReport(params: {
+    date_from: string;
+    date_to: string;
+    branch_id?: string;
+    kind?: 'payroll' | 'expenses' | 'combined';
+  }) {
+    const qs = new URLSearchParams();
+    qs.set('date_from', params.date_from);
+    qs.set('date_to', params.date_to);
+    if (params.branch_id) qs.set('branch_id', params.branch_id);
+    if (params.kind) qs.set('kind', params.kind);
+    const query = qs.toString();
+    const suffix = query ? `?${query}` : '';
+    return this.request(`/admin/tracking/report${suffix}`);
+  }
+
   // Mark calendar event as dispensed
   async markDispensedOnCalendar(patientId: string, dateISO: string) {
     return this.request<any>('/calendar/mark-dispensed', {
