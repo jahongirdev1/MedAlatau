@@ -51,6 +51,7 @@ import re
 from io import BytesIO
 from utils.waybill_html import render_waybill_html
 from utils.waybill_pdf import render_waybill_pdf
+from services.shipments import load_waybill_payload
 try:
     from openpyxl import Workbook
     from openpyxl.utils import get_column_letter
@@ -63,48 +64,6 @@ log = logging.getLogger("reports")
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
 MAIN_BRANCH_ID = None
-
-
-def _fmt_dt(dt) -> str:
-    if not dt:
-        return ""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(ALMATY_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-
-def load_waybill_payload(db: Session, shipment_id: str) -> dict:
-    sh = db.get(DBShipment, shipment_id)
-    if not sh:
-        raise HTTPException(status_code=404, detail="Shipment not found")
-
-    to_branch = db.get(DBBranch, getattr(sh, "to_branch_id"))
-    to_branch_name = getattr(to_branch, "name", "—")
-    from_branch_name = "Главный склад"
-
-    items = (
-        db.execute(
-            select(DBShipmentItem)
-            .where(DBShipmentItem.shipment_id == shipment_id)
-            .order_by(DBShipmentItem.id)
-        )
-        .scalars()
-        .all()
-    )
-    rows = [
-        {"name": it.item_name, "quantity": int(it.quantity or 0)}
-        for it in items
-    ]
-    total_qty = sum(r["quantity"] for r in rows)
-
-    return {
-        "id": str(sh.id),
-        "created_at": _fmt_dt(getattr(sh, "created_at", None)),
-        "from_branch": from_branch_name,
-        "to_branch": to_branch_name,
-        "items": rows,
-        "total_quantity": total_qty,
-    }
 
 
 def to_almaty(dt: datetime | str | None) -> str:
@@ -373,12 +332,19 @@ def ensure_arrivals_schema():
 app = FastAPI(title="Warehouse Management System")
 
 # CORS middleware
+ALLOWED_ORIGINS = [
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "http://192.168.8.79:8080",  # TODO: replace with the active frontend origin if different
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # Create tables on startup
@@ -1333,6 +1299,9 @@ def download_shipment_waybill(
     db: Session = Depends(get_db),
 ):
     payload = load_waybill_payload(db, shipment_id)
+
+    if not payload:
+        raise HTTPException(status_code=404, detail="Shipment not found")
 
     if format.lower() == "html":
         html = render_waybill_html(payload)
