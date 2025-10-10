@@ -1,17 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import BranchSelect from '@/components/BranchSelect';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { toast } from '@/hooks/use-toast';
-import { apiService } from '@/utils/api';
+import api from '@/utils/api';
 
 const moneyFormatter = new Intl.NumberFormat('ru-RU', {
   minimumFractionDigits: 2,
@@ -50,10 +44,10 @@ const Payroll: React.FC = () => {
     amount: '',
     date: todayIso(),
   });
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = useState<{ date_from: string; date_to: string; branch_id: string | undefined }>({
     date_from: '',
     date_to: '',
-    branch_id: '',
+    branch_id: undefined,
   });
 
   const branchLabelMap = useMemo(() => {
@@ -71,7 +65,7 @@ const Payroll: React.FC = () => {
   const loadEntries = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiService.getPayroll({
+      const res = await api.getPayroll({
         date_from: filters.date_from || undefined,
         date_to: filters.date_to || undefined,
         branch_id: filters.branch_id || undefined,
@@ -106,7 +100,7 @@ const Payroll: React.FC = () => {
 
   const fetchBranches = async () => {
     try {
-      const res = await apiService.getBranches();
+      const res = await api.getBranches();
       const list = Array.isArray(res.data)
         ? res.data
         : Array.isArray((res.data as any)?.data)
@@ -161,11 +155,11 @@ const Payroll: React.FC = () => {
         first_name: form.first_name.trim(),
         last_name: form.last_name.trim(),
         role: form.role.trim(),
-        branch_id: form.branch_id || undefined,
+        branch_id: form.branch_id && form.branch_id !== 'warehouse' ? form.branch_id : null,
         amount: amountValue,
         date: form.date,
       };
-      const res = await apiService.createPayroll(payload);
+      const res = await api.createPayroll(payload);
       if (res.error) {
         toast({
           title: 'Ошибка',
@@ -245,21 +239,12 @@ const Payroll: React.FC = () => {
               </div>
               <div>
                 <Label>Филиал</Label>
-                <Select
+                <BranchSelect
                   value={form.branch_id}
-                  onValueChange={(value) => setForm((prev) => ({ ...prev, branch_id: value }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Выберите филиал" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {branchOptions.map((option) => (
-                      <SelectItem key={option.value} value={option.value}>
-                        {option.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  onChange={(value) => setForm((prev) => ({ ...prev, branch_id: value }))}
+                  includeWarehouse
+                  placeholder="Филиал"
+                />
               </div>
               <div>
                 <Label htmlFor="amount">Сумма</Label>
@@ -320,24 +305,14 @@ const Payroll: React.FC = () => {
             </div>
             <div>
               <Label>Филиал</Label>
-              <Select
+              <BranchSelect
                 value={filters.branch_id}
-                onValueChange={(value) =>
+                onChange={(value) =>
                   setFilters((prev) => ({ ...prev, branch_id: value }))
                 }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Все филиалы" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="">Все филиалы</SelectItem>
-                  {branchOptions.map((option) => (
-                    <SelectItem key={`filter-${option.value}`} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                includeWarehouse
+                placeholder="Все филиалы"
+              />
             </div>
           </div>
 
