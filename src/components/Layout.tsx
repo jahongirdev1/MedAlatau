@@ -1,7 +1,13 @@
 
 import React, { useEffect } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion';
 import { storage } from '@/utils/storage';
 import GlobalTitleLock from '@/components/GlobalTitleLock';
 import type { LucideIcon } from 'lucide-react';
@@ -34,14 +40,6 @@ type MenuItem = {
   icon: LucideIcon;
   label: string;
 };
-
-type MenuGroup = {
-  type: 'group';
-  label: string;
-  items: MenuItem[];
-};
-
-type MenuEntry = MenuItem | MenuGroup;
 
 const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
@@ -94,7 +92,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     }
   };
 
-  const adminMenuItems: MenuEntry[] = [
+  const adminMenuItems: MenuItem[] = [
     { path: '/admin', icon: Home, label: 'Главная' },
     { path: '/admin/branches', icon: Building2, label: 'Филиалы' },
     { path: '/admin/medicine-categories', icon: FileText, label: 'Категории лекарств' },
@@ -104,15 +102,6 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/admin/arrivals', icon: Truck, label: 'Поступления' },
     { path: '/admin/shipments', icon: ArrowLeftRight, label: 'Отправки' },
     { path: '/admin/requisitions', icon: ClipboardList, label: 'Заявки' },
-    {
-      type: 'group',
-      label: 'Отслеживание',
-      items: [
-        { path: '/admin/tracking/payroll', icon: Wallet, label: 'Зарплата' },
-        { path: '/admin/tracking/expenses', icon: Receipt, label: 'Расходы' },
-        { path: '/admin/tracking/report', icon: BarChart3, label: 'Отчёт' },
-      ],
-    },
     { path: '/admin/employees', icon: Users, label: 'Сотрудники' },
     { path: '/admin/patients', icon: UserCheck, label: 'Пациенты' },
     { path: '/admin/reports/warehouse', icon: FileText, label: 'Отчёты склада' },
@@ -135,20 +124,19 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/branch/reports', icon: FileText, label: 'Отчеты' },
   ];
 
-  const menuItems: MenuEntry[] = currentUser?.role === 'admin'
+  const menuItems: MenuItem[] = currentUser?.role === 'admin'
     ? adminMenuItems
     : branchMenuItems;
 
-  const renderLink = (item: MenuItem, isSub = false, groupKey?: string) => {
+  const renderLink = (item: MenuItem) => {
     const Icon = item.icon;
     const isActive = location.pathname === item.path;
     const baseClass = 'flex items-center py-3 text-gray-700 hover:bg-blue-50 hover:text-blue-600 transition-colors';
-    const padding = sidebarOpen ? (isSub ? 'pl-8 pr-4' : 'px-4') : 'px-4';
+    const padding = sidebarOpen ? 'px-4' : 'px-4';
     const activeClass = isActive ? 'bg-blue-100 text-blue-600 border-r-2 border-blue-600' : '';
 
     return (
       <Link
-        key={`${groupKey ?? 'item'}-${item.path}`}
         to={item.path}
         className={`${baseClass} ${padding} ${activeClass}`}
       >
@@ -187,25 +175,49 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
           </div>
         </div>
 
-        <nav className="mt-6">
-          {menuItems.map((item) => {
-            if ('items' in item) {
-              return (
-                <div key={`group-${item.label}`} className="mt-4">
-                  {sidebarOpen && (
-                    <p className="px-4 text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-                      {item.label}
-                    </p>
-                  )}
-                  <div className="space-y-1">
-                    {item.items.map((subItem) => renderLink(subItem, true, item.label))}
-                  </div>
-                </div>
-              );
-            }
-
-            return renderLink(item);
-          })}
+        <nav className="mt-6 space-y-1">
+          {menuItems.map((item) => (
+            <React.Fragment key={item.path}>
+              {renderLink(item)}
+              {currentUser.role === 'admin' && item.path === '/admin/requisitions' && sidebarOpen && (
+                <Accordion type="single" collapsible className="mt-2">
+                  <AccordionItem value="tracking" className="border-none">
+                    <AccordionTrigger className="py-2 px-4 rounded hover:bg-muted text-left">
+                      Отслеживание
+                    </AccordionTrigger>
+                    <AccordionContent className="pl-2">
+                      <div className="grid gap-1">
+                        <NavLink
+                          to="/admin/tracking/payroll"
+                          className={({ isActive }) =>
+                            `block py-2 px-3 rounded hover:bg-muted ${isActive ? 'bg-muted font-medium' : ''}`
+                          }
+                        >
+                          Зарплата
+                        </NavLink>
+                        <NavLink
+                          to="/admin/tracking/expenses"
+                          className={({ isActive }) =>
+                            `block py-2 px-3 rounded hover:bg-muted ${isActive ? 'bg-muted font-medium' : ''}`
+                          }
+                        >
+                          Расходы
+                        </NavLink>
+                        <NavLink
+                          to="/admin/tracking/report"
+                          className={({ isActive }) =>
+                            `block py-2 px-3 rounded hover:bg-muted ${isActive ? 'bg-muted font-medium' : ''}`
+                          }
+                        >
+                          Отчёт
+                        </NavLink>
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                </Accordion>
+              )}
+            </React.Fragment>
+          ))}
         </nav>
       </div>
 
