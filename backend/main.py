@@ -45,6 +45,7 @@ from datetime import datetime, date, timedelta, timezone, time
 from zoneinfo import ZoneInfo
 import uuid
 import json
+import os
 from pydantic import ValidationError, BaseModel, conint, conlist
 from services.stock import get_available_qty, decrement_stock, ItemType
 import traceback
@@ -65,7 +66,7 @@ logger = logging.getLogger(__name__)
 log = logging.getLogger("reports")
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
-MAIN_BRANCH_ID = None
+MAIN_BRANCH_ID = os.getenv("MAIN_BRANCH_ID")
 
 
 def to_almaty(dt: datetime | str | None) -> str:
@@ -1893,65 +1894,68 @@ async def get_dispensings_report(
     format: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    result = await build_dispensings_json_payload(
-        branch_id=branch_id,
-        date_from=date_from,
-        date_to=date_to,
-        db=db,
-    )
-
-    if _wants_excel(request, export, format):
-        rows = []
-        for r in result.get("data", []):
-            items_list = r.get("items", []) or []
-            items_human = "; ".join(
-                f"{i.get('name','')} — {i.get('quantity','')}" for i in items_list
-            )
-            rows.append(
-                [
-                    r.get("patient_name", ""),
-                    r.get("employee_name", ""),
-                    _to_almaty_str(r.get("datetime", "")),
-                    items_human,
-                ]
-            )
-
-        content = _render_xlsx(
-            headers=[
-                "Пациент",
-                "Сотрудник",
-                "Дата и время",
-                "Выдано (наименование — кол-во)",
-            ],
-            rows=rows,
-            sheet_name="Выдачи",
+    try:
+        result = await build_dispensings_json_payload(
+            branch_id=branch_id,
+            date_from=date_from,
+            date_to=date_to,
+            db=db,
         )
 
-        safe_to = (date_to or "all")
-        return Response(
-            content,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers=_ascii_download_headers(
-                f"dispensings_{safe_to}.xlsx"
-            ),
-        )
+        if _wants_excel(request, export, format):
+            rows = []
+            for r in result.get("data", []):
+                items_list = r.get("items", []) or []
+                items_human = "; ".join(
+                    f"{i.get('name','')} — {i.get('quantity','')}" for i in items_list
+                )
+                rows.append(
+                    [
+                        r.get("patient_name", ""),
+                        r.get("employee_name", ""),
+                        _to_almaty_str(r.get("datetime", "")),
+                        items_human,
+                    ]
+                )
 
-    return result
+            content = _render_xlsx(
+                headers=[
+                    "Пациент",
+                    "Сотрудник",
+                    "Дата и время",
+                    "Выдано (наименование — кол-во)",
+                ],
+                rows=rows,
+                sheet_name="Выдачи",
+            )
+
+            safe_to = (date_to or "all")
+            return Response(
+                content,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers=_ascii_download_headers(
+                    f"dispensings_{safe_to}.xlsx"
+                ),
+            )
+
+        return result
+    except HTTPException as exc:
+        raise HTTPException(status_code=400, detail=exc.detail)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 async def build_dispensings_json_payload(
     *, branch_id: str | None, date_from: str | None, date_to: str | None, db: Session
 ) -> dict:
     q = db.query(DBDispensingRecord).options(joinedload(DBDispensingRecord.items))
-    if date_from:
-        start = datetime.fromisoformat(date_from).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+
+    start = _parse_report_date_start(date_from)
+    if start:
         q = q.filter(DBDispensingRecord.date >= start)
-    if date_to:
-        end = datetime.fromisoformat(date_to).replace(
-            hour=23, minute=59, second=59, microsecond=999999
-        )
+
+    end = _parse_report_date_end(date_to)
+    if end:
         q = q.filter(DBDispensingRecord.date <= end)
     if branch_id:
         q = q.filter(DBDispensingRecord.branch_id == branch_id)
@@ -2020,20 +2024,23 @@ async def build_arrivals_json_payload(
     *, branch_id: str | None, date_from: str | None, date_to: str | None, db: Session
 ) -> dict:
 
-    col = pick_arrival_branch_col(DBArrival)
-    q = db.query(DBArrival)
-    if date_from:
-        start = datetime.fromisoformat(date_from).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
+    q = db.query(DBArrival).order_by(DBArrival.date.asc())
+
+    start = _parse_report_date_start(date_from)
+    if start:
         q = q.filter(DBArrival.date >= start)
-    if date_to:
-        end = datetime.fromisoformat(date_to).replace(
-            hour=23, minute=59, second=59, microsecond=999999
-        )
+
+    end = _parse_report_date_end(date_to)
+    if end:
         q = q.filter(DBArrival.date <= end)
-    if branch_id:
-        q = q.filter(col == branch_id)
+
+    branch_col = get_arrival_branch_column()
+    if branch_id and branch_col is not None:
+        q = q.filter(branch_col == branch_id)
+    elif branch_id and branch_col is None:
+        main_branch_id = MAIN_BRANCH_ID or _get_main_branch_id(db)
+        if main_branch_id and branch_id != main_branch_id:
+            return {"data": []}
     rows = q.all()
 
     name_map = {(r.item_type, r.item_id): r.item_name for r in rows}
@@ -2071,41 +2078,46 @@ async def get_arrivals_report(
     format: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    result = await build_arrivals_json_payload(
-        branch_id=branch_id, date_from=date_from, date_to=date_to, db=db
-    )
+    try:
+        result = await build_arrivals_json_payload(
+            branch_id=branch_id, date_from=date_from, date_to=date_to, db=db
+        )
 
-    if _wants_excel(request, export, format):
-        rows: list[list[str]] = []
-        for r in result.get("data", []):
-            items_list = r.get("items", []) or []
-            items_human = "; ".join(
-                f"{i.get('name','')} — {i.get('quantity','')}" for i in items_list
+        if _wants_excel(request, export, format):
+            rows: list[list[str]] = []
+            for r in result.get("data", []):
+                items_list = r.get("items", []) or []
+                items_human = "; ".join(
+                    f"{i.get('name','')} — {i.get('quantity','')}" for i in items_list
+                )
+                rows.append([
+                    _to_almaty_str(r.get("datetime", "")),
+                    items_human,
+                ])
+
+            content = _render_xlsx(
+                headers=[
+                    "Дата и время",
+                    "Поступило (наименование — кол-во)",
+                ],
+                rows=rows,
+                sheet_name="Поступления",
             )
-            rows.append([
-                _to_almaty_str(r.get("datetime", "")),
-                items_human,
-            ])
 
-        content = _render_xlsx(
-            headers=[
-                "Дата и время",
-                "Поступило (наименование — кол-во)",
-            ],
-            rows=rows,
-            sheet_name="Поступления",
-        )
+            safe_to = (date_to or "all")
+            return Response(
+                content,
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers=_ascii_download_headers(
+                    f"arrivals_{safe_to}.xlsx"
+                ),
+            )
 
-        safe_to = (date_to or "all")
-        return Response(
-            content,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers=_ascii_download_headers(
-                f"arrivals_{safe_to}.xlsx"
-            ),
-        )
-
-    return result
+        return result
+    except HTTPException as exc:
+        raise HTTPException(status_code=400, detail=exc.detail)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 
@@ -2187,6 +2199,20 @@ def _parse_ymd(s: str | None, end_of_day: bool = False) -> datetime | None:
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
+def _parse_report_date_start(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value)
+    return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _parse_report_date_end(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value)
+    return dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+
 def _wants_excel(
     request: Request | None, export: str | None, format_: str | None
 ) -> bool:
@@ -2207,6 +2233,8 @@ def _get_main_branch_id(db):
         row = db.execute(
             text("SELECT id FROM branches ORDER BY created_at ASC LIMIT 1")
         ).first()
+    if not row:
+        return None
     MAIN_BRANCH_ID = row[0]
     return MAIN_BRANCH_ID
 
@@ -2227,15 +2255,26 @@ def _ascii_download_headers(filename_ascii: str) -> dict[str, str]:
 ascii_download_headers = _ascii_download_headers
 
 
+def get_arrival_branch_column() -> Column | None:
+    """
+    Возвращает ORM-колонку, по которой у прихода определяется филиал.
+    Может быть DBArrival.branch_id, DBArrival.to_branch_id и т.п.
+    Если колонки нет — возвращает None (глобальные приходы).
+    """
+    col = getattr(DBArrival, "branch_id", None) or getattr(DBArrival, "to_branch_id", None)
+    if col is not None:
+        return col
+    for rel_name in ("branch", "to_branch"):
+        rel = getattr(DBArrival, rel_name, None)
+        if rel is not None:
+            rel_id = getattr(rel, "id", None)
+            if rel_id is not None:
+                return rel_id
+    return None
+
+
 def pick_arrival_branch_col(Arrival):
-    for name in ("to_branch_id", "branch_id"):
-        if hasattr(Arrival, name):
-            return getattr(Arrival, name)
-    for name in ("to_branch", "branch"):
-        if hasattr(Arrival, name):
-            rel = getattr(Arrival, name)
-            return rel.id
-    raise RuntimeError("Arrival: no branch column found")
+    return get_arrival_branch_column()
 
 
 def build_wh_stock_json(
