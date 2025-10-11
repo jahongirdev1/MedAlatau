@@ -115,6 +115,24 @@ class ApiService {
     URL.revokeObjectURL(link.href);
   }
 
+  async fetchBlob(endpoint: string, fileName: string) {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      credentials: 'include',
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  }
+
   // Auth
   async login(credentials: LoginData) {
     return this.request<any>('/auth/login', {
@@ -713,18 +731,46 @@ class ApiService {
     });
   }
 
-  async getDispensingReport(params: { branch_id: string; date_from: string; date_to: string }): Promise<{ data: DispensingRow[] }> {
-    const q = new URLSearchParams(params as any).toString();
-    const res = await this.request<any>(`/reports/dispensings?${q}`);
-    if (res.error) return res as any;
+  async getDispensingsReport(params: { branch_id: string; date_from?: string; date_to?: string }): Promise<{ data: DispensingRow[] }> {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    const query = qs.toString();
+    const res = await this.request<any>(`/reports/dispensings?${query}`);
+    if ((res as any)?.error) return res as any;
     return { data: this.normalizeData(res) } as { data: DispensingRow[] };
   }
 
-  async getIncomingReport(params: { branch_id: string; date_from: string; date_to: string }): Promise<{ data: IncomingRow[] }> {
-    const q = new URLSearchParams(params as any).toString();
-    const res = await this.request<any>(`/reports/incoming?${q}`);
-    if (res.error) return res as any;
+  async getArrivalsReport(params: { branch_id: string; date_from?: string; date_to?: string }): Promise<{ data: IncomingRow[] }> {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    const query = qs.toString();
+    const res = await this.request<any>(`/reports/arrivals?${query}`);
+    if ((res as any)?.error) return res as any;
     return { data: this.normalizeData(res) } as { data: IncomingRow[] };
+  }
+
+  exportDispensingsExcel(params: { branch_id: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    qs.set('export', 'excel');
+    return this.fetchBlob(
+      `/reports/dispensings?${qs.toString()}`,
+      `dispensings_${params.date_to ?? 'all'}.xlsx`
+    );
+  }
+
+  exportArrivalsExcel(params: { branch_id: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    qs.set('export', 'excel');
+    return this.fetchBlob(
+      `/reports/arrivals?${qs.toString()}`,
+      `arrivals_${params.date_to ?? 'all'}.xlsx`
+    );
   }
 
   async getStockReport(params: { branch_id: string; date_from?: string; date_to?: string }) {

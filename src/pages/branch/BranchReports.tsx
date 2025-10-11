@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { apiService, API_BASE_URL } from '@/utils/api';
+import { apiService } from '@/utils/api';
 import { storage } from '@/utils/storage';
-import { Calendar, Download, FileText, Package, Users, TrendingUp } from 'lucide-react';
+import { Download, FileText, Package, Users, TrendingUp } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -20,6 +20,7 @@ const BranchReports: React.FC = () => {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [reportData, setReportData] = useState<any[]>([]);
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [selectedItem, setSelectedItem] = useState<any>(null);
@@ -31,94 +32,145 @@ const BranchReports: React.FC = () => {
     { value: 'arrivals', label: 'Отчет по поступлениям', icon: TrendingUp }
   ];
 
+  useEffect(() => {
+    setReportData([]);
+    setError(null);
+    setLoading(false);
+    setShowDetails(false);
+    setSelectedItem(null);
+    setStockDetails(null);
+  }, [selectedReportType]);
+
   const generateReport = async () => {
     if (!selectedReportType) {
       toast({ title: 'Выберите тип отчета', variant: 'destructive' });
       return;
     }
 
+    if (!branchId) {
+      toast({ title: 'Не указан филиал', variant: 'destructive' });
+      return;
+    }
+
     setLoading(true);
+    setError(null);
     try {
-      let response;
+      let response: any;
       switch (selectedReportType) {
         case 'stock': {
-          const params: Record<string, string> = { branch_id: branchId! };
-          if (dateFrom && dateTo) {
+          const params: Record<string, string> = { branch_id: branchId };
+          if (dateFrom) {
             params.date_from = new Date(dateFrom).toISOString().split('T')[0];
+          }
+          if (dateTo) {
             params.date_to = new Date(dateTo).toISOString().split('T')[0];
           }
           response = await apiService.getStockReport(params as any);
           break;
         }
         case 'dispensing':
-          response = await apiService.getDispensingReport({
-            branch_id: branchId!,
+          response = await apiService.getDispensingsReport({
+            branch_id: branchId,
             date_from: dateFrom || undefined,
             date_to: dateTo || undefined,
-          } as any);
+          });
           break;
         case 'arrivals':
-          response = await apiService.getIncomingReport({
-            branch_id: branchId!,
+          response = await apiService.getArrivalsReport({
+            branch_id: branchId,
             date_from: dateFrom || undefined,
             date_to: dateTo || undefined,
-          } as any);
+          });
           break;
         default:
           throw new Error('Unknown report type');
       }
 
-      if (response.data) {
-        setReportData(response.data);
-        toast({ title: 'Отчет сформирован успешно' });
+      if (response?.error) {
+        setReportData([]);
+        setError(response.error);
+        toast({ title: 'Ошибка формирования отчета', description: response.error, variant: 'destructive' });
+        return;
       }
-    } catch (error) {
-      console.error('Error generating report:', error);
-      toast({ title: 'Ошибка формирования отчета', variant: 'destructive' });
+
+      if (response?.data) {
+        setReportData(response.data);
+      } else {
+        setReportData([]);
+      }
+      toast({ title: 'Отчет сформирован успешно' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Не удалось сформировать отчет';
+      setReportData([]);
+      setError(message);
+      toast({ title: 'Ошибка формирования отчета', description: message, variant: 'destructive' });
     } finally {
       setLoading(false);
     }
   };
 
-  const exportToExcel = () => {
-    if (selectedReportType === 'dispensing') {
-      const params = new URLSearchParams({
-        branch_id: branchId!,
-        date_from: dateFrom,
-        date_to: dateTo,
-        export: 'excel',
-      });
-      const url = `/reports/dispensings?${params.toString()}`;
-      window.open(`${API_BASE_URL}${url}`, '_blank');
+  const exportToExcel = async () => {
+    if (!selectedReportType) {
+      toast({ title: 'Выберите тип отчета', variant: 'destructive' });
       return;
     }
 
-    if (reportData.length === 0) {
-      toast({ title: 'Нет данных для экспорта', variant: 'destructive' });
+    if (!branchId) {
+      toast({ title: 'Не указан филиал', variant: 'destructive' });
       return;
     }
 
-    const reportType = reportTypes.find(r => r.value === selectedReportType);
-    let worksheet;
-    if (selectedReportType === 'stock') {
-      const rows = reportData.map((r: any) => ({
-        'Название': r.name,
-        'Категория': r.category ?? '—',
-        'Количество': r.quantity,
-      }));
-      worksheet = XLSX.utils.json_to_sheet(rows, {
-        header: ['Название', 'Категория', 'Количество'],
-      });
-    } else {
-      worksheet = XLSX.utils.json_to_sheet(reportData);
+    try {
+      if (selectedReportType === 'dispensing') {
+        await apiService.exportDispensingsExcel({
+          branch_id: branchId,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        });
+        toast({ title: 'Отчет экспортирован в Excel' });
+        return;
+      }
+
+      if (selectedReportType === 'arrivals') {
+        await apiService.exportArrivalsExcel({
+          branch_id: branchId,
+          date_from: dateFrom || undefined,
+          date_to: dateTo || undefined,
+        });
+        toast({ title: 'Отчет экспортирован в Excel' });
+        return;
+      }
+
+      if (reportData.length === 0) {
+        toast({ title: 'Нет данных для экспорта', variant: 'destructive' });
+        return;
+      }
+
+      const reportType = reportTypes.find(r => r.value === selectedReportType);
+      const workbook = XLSX.utils.book_new();
+      let worksheet;
+
+      if (selectedReportType === 'stock') {
+        const rows = reportData.map((r: any) => ({
+          'Название': r.name,
+          'Категория': r.category ?? '—',
+          'Количество': r.quantity,
+        }));
+        worksheet = XLSX.utils.json_to_sheet(rows, {
+          header: ['Название', 'Категория', 'Количество'],
+        });
+      } else {
+        worksheet = XLSX.utils.json_to_sheet(reportData);
+      }
+
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
+      const fileName = `${reportType?.label || 'Отчет'}_${new Date().toISOString().split('T')[0]}.xlsx`;
+      XLSX.writeFile(workbook, fileName);
+      toast({ title: 'Отчет экспортирован в Excel' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Не удалось экспортировать отчет';
+      toast({ title: 'Ошибка экспорта', description: message, variant: 'destructive' });
     }
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Report');
-
-    const fileName = `${reportType?.label || 'Отчет'}_${new Date().toISOString().split('T')[0]}.xlsx`;
-    XLSX.writeFile(workbook, fileName);
-
-    toast({ title: 'Отчет экспортирован в Excel' });
   };
 
   const showItemDetails = async (item: any) => {
@@ -215,7 +267,7 @@ const BranchReports: React.FC = () => {
         const parts = items.map((i: any) => `${i.name} — ${i.quantity} шт.`);
         const res = parts.slice(0, 3).join('; ');
         return parts.length > 3 ? `${res}; …` : res;
-        };
+      };
       return (
         <Table>
           <TableHeader>
@@ -338,7 +390,7 @@ const BranchReports: React.FC = () => {
             <Button onClick={generateReport} disabled={loading || !selectedReportType}>
               {loading ? 'Формируется...' : 'Сформировать отчет'}
             </Button>
-            <Button variant="outline" onClick={exportToExcel} disabled={reportData.length === 0}>
+            <Button variant="outline" onClick={exportToExcel} disabled={!selectedReportType || loading}>
               <Download className="h-4 w-4 mr-2" />
               Экспорт в Excel
             </Button>
@@ -368,9 +420,11 @@ const BranchReports: React.FC = () => {
           <CardContent className="text-center py-8">
             <FileText className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
             <p className="text-muted-foreground">
-              {selectedReportType === 'dispensing' || selectedReportType === 'arrivals'
-                ? 'Нет данных за выбранный период.'
-                : 'Нет данных для отображения. Попробуйте изменить параметры отчета.'}
+              {error
+                ? error
+                : selectedReportType === 'dispensing' || selectedReportType === 'arrivals'
+                  ? 'Нет данных за выбранный период.'
+                  : 'Нет данных для отображения. Попробуйте изменить параметры отчета.'}
             </p>
           </CardContent>
         </Card>

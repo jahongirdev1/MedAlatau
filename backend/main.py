@@ -1886,38 +1886,98 @@ async def export_incoming_report(
 @app.get("/reports/dispensings")
 async def get_dispensings_report(
     request: Request,
-    date_from: str,
-    date_to: str,
-    branch_id: str | None = Query(None),
+    branch_id: str = Query(...),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
     export: str | None = Query(None),
     format: str | None = Query(None),
     db: Session = Depends(get_db),
 ):
-    start = datetime.fromisoformat(date_from).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    end = datetime.fromisoformat(date_to).replace(
-        hour=23, minute=59, second=59, microsecond=999999
+    result = await build_dispensings_json_payload(
+        branch_id=branch_id,
+        date_from=date_from,
+        date_to=date_to,
+        db=db,
     )
 
+    if _wants_excel(request, export, format):
+        rows = []
+        for r in result.get("data", []):
+            items_list = r.get("items", []) or []
+            items_human = "; ".join(
+                f"{i.get('name','')} — {i.get('quantity','')}" for i in items_list
+            )
+            rows.append(
+                [
+                    r.get("patient_name", ""),
+                    r.get("employee_name", ""),
+                    _to_almaty_str(r.get("datetime", "")),
+                    items_human,
+                ]
+            )
+
+        content = _render_xlsx(
+            headers=[
+                "Пациент",
+                "Сотрудник",
+                "Дата и время",
+                "Выдано (наименование — кол-во)",
+            ],
+            rows=rows,
+            sheet_name="Выдачи",
+        )
+
+        safe_to = (date_to or "all")
+        return Response(
+            content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers=_ascii_download_headers(
+                f"dispensings_{safe_to}.xlsx"
+            ),
+        )
+
+    return result
+
+
+async def build_dispensings_json_payload(
+    *, branch_id: str | None, date_from: str | None, date_to: str | None, db: Session
+) -> dict:
     q = db.query(DBDispensingRecord).options(joinedload(DBDispensingRecord.items))
-    q = q.filter(DBDispensingRecord.date >= start, DBDispensingRecord.date <= end)
+    if date_from:
+        start = datetime.fromisoformat(date_from).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        q = q.filter(DBDispensingRecord.date >= start)
+    if date_to:
+        end = datetime.fromisoformat(date_to).replace(
+            hour=23, minute=59, second=59, microsecond=999999
+        )
+        q = q.filter(DBDispensingRecord.date <= end)
     if branch_id:
         q = q.filter(DBDispensingRecord.branch_id == branch_id)
+
     records = q.all()
 
     patient_ids = {r.patient_id for r in records}
     employee_ids = {r.employee_id for r in records}
     name_map = {(i.item_type, i.item_id): i.item_name for r in records for i in r.items}
 
-    patient_map = {
-        p.id: f"{p.first_name} {p.last_name}".strip()
-        for p in db.query(DBPatient).filter(DBPatient.id.in_(patient_ids)).all()
-    } if patient_ids else {}
-    employee_map = {
-        e.id: f"{e.first_name} {e.last_name}".strip()
-        for e in db.query(DBEmployee).filter(DBEmployee.id.in_(employee_ids)).all()
-    } if employee_ids else {}
+    patient_map = (
+        {
+            p.id: f"{p.first_name} {p.last_name}".strip()
+            for p in db.query(DBPatient).filter(DBPatient.id.in_(patient_ids)).all()
+        }
+        if patient_ids
+        else {}
+    )
+    employee_map = (
+        {
+            e.id: f"{e.first_name} {e.last_name}".strip()
+            for e in db.query(DBEmployee).filter(DBEmployee.id.in_(employee_ids)).all()
+        }
+        if employee_ids
+        else {}
+    )
 
     med_ids = [iid for (t, iid) in name_map if t == "medicine"]
     if med_ids:
@@ -1953,60 +2013,25 @@ async def get_dispensings_report(
             }
         )
 
-    result = {"data": json_rows}
-
-    if _wants_excel(export, format):
-        rows = []
-        for r in result.get("data", []):
-            items_list = r.get("items", []) or []
-            items_human = "; ".join(
-                f"{i.get('name','')} — {i.get('quantity','')}" for i in items_list
-            )
-            rows.append(
-                [
-                    r.get("patient_name", ""),
-                    r.get("employee_name", ""),
-                    _to_almaty_str(r.get("datetime", "")),
-                    items_human,
-                ]
-            )
-
-        content = _render_xlsx(
-            headers=[
-                "Пациент",
-                "Сотрудник",
-                "Дата и время",
-                "Выдано (наименование — кол-во)",
-            ],
-            rows=rows,
-            sheet_name="Выдачи",
-        )
-
-        safe_to = date_to or datetime.now(ALMATY_TZ).strftime("%Y-%m-%d")
-        return Response(
-            content,
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers=_ascii_headers(
-                f"dispensings_report_{safe_to}.xlsx"
-            ),
-        )
-
-    return result
+    return {"data": json_rows}
 
 
 async def build_arrivals_json_payload(
-    *, branch_id: str | None, date_from: str, date_to: str, db: Session
+    *, branch_id: str | None, date_from: str | None, date_to: str | None, db: Session
 ) -> dict:
-    start = datetime.fromisoformat(date_from).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    end = datetime.fromisoformat(date_to).replace(
-        hour=23, minute=59, second=59, microsecond=999999
-    )
 
     col = pick_arrival_branch_col(DBArrival)
     q = db.query(DBArrival)
-    q = q.filter(DBArrival.date >= start, DBArrival.date <= end)
+    if date_from:
+        start = datetime.fromisoformat(date_from).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        q = q.filter(DBArrival.date >= start)
+    if date_to:
+        end = datetime.fromisoformat(date_to).replace(
+            hour=23, minute=59, second=59, microsecond=999999
+        )
+        q = q.filter(DBArrival.date <= end)
     if branch_id:
         q = q.filter(col == branch_id)
     rows = q.all()
@@ -2039,9 +2064,9 @@ async def build_arrivals_json_payload(
 @app.get("/reports/arrivals")
 async def get_arrivals_report(
     request: Request,
-    date_from: str,
-    date_to: str,
-    branch_id: str | None = Query(None),
+    branch_id: str = Query(...),
+    date_from: str | None = Query(None),
+    date_to: str | None = Query(None),
     export: str | None = Query(None),
     format: str | None = Query(None),
     db: Session = Depends(get_db),
@@ -2050,7 +2075,7 @@ async def get_arrivals_report(
         branch_id=branch_id, date_from=date_from, date_to=date_to, db=db
     )
 
-    if _wants_excel(export, format):
+    if _wants_excel(request, export, format):
         rows: list[list[str]] = []
         for r in result.get("data", []):
             items_list = r.get("items", []) or []
@@ -2071,12 +2096,12 @@ async def get_arrivals_report(
             sheet_name="Поступления",
         )
 
-        safe_to = date_to or datetime.now(ALMATY_TZ).strftime("%Y-%m-%d")
+        safe_to = (date_to or "all")
         return Response(
             content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers=_ascii_headers(
-                f"arrivals_report_{safe_to}.xlsx"
+            headers=_ascii_download_headers(
+                f"arrivals_{safe_to}.xlsx"
             ),
         )
 
@@ -2162,7 +2187,9 @@ def _parse_ymd(s: str | None, end_of_day: bool = False) -> datetime | None:
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
-def _wants_excel(export: str | None, format_: str | None) -> bool:
+def _wants_excel(
+    request: Request | None, export: str | None, format_: str | None
+) -> bool:
     e, f = (export or "").lower(), (format_ or "").lower()
     return e in {"excel", "xlsx"} or f in {"excel", "xlsx"}
 
@@ -2488,7 +2515,7 @@ def admin_wh_arrivals(
         end = _parse_ymd(date_to, end_of_day=True)
         with SessionLocal() as db:
             payload = build_wh_arrivals_json(db, start, end)
-            if _wants_excel(export, format):
+            if _wants_excel(None, export, format):
                 rows: list[list[str]] = []
                 for r in payload.get("data", []):
                     items = "; ".join(
@@ -2524,7 +2551,7 @@ def admin_wh_dispatches(
         end = _parse_ymd(date_to, end_of_day=True)
         with SessionLocal() as db:
             payload = build_wh_dispatches_json(db, start, end)
-            if _wants_excel(export, format):
+            if _wants_excel(None, export, format):
                 rows: list[list[str]] = []
                 for r in payload.get("data", []):
                     items = "; ".join(
