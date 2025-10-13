@@ -76,11 +76,15 @@ const BranchReports: React.FC = () => {
           });
           break;
         case 'arrivals':
-          response = await apiService.getArrivalsReport({
-            branch_id: branchId,
-            date_from: dateFrom || undefined,
-            date_to: dateTo || undefined,
-          });
+          if (!dateFrom && !dateTo) {
+            response = await apiService.getArrivalsReport({ branch_id: branchId });
+          } else {
+            response = await apiService.getArrivalsReport({
+              branch_id: branchId,
+              date_from: dateFrom || undefined,
+              date_to: dateTo || undefined,
+            });
+          }
           break;
         default:
           throw new Error('Unknown report type');
@@ -132,11 +136,15 @@ const BranchReports: React.FC = () => {
       }
 
       if (selectedReportType === 'arrivals') {
-        await apiService.exportArrivalsExcel({
-          branch_id: branchId,
-          date_from: dateFrom || undefined,
-          date_to: dateTo || undefined,
-        });
+        if (!dateFrom && !dateTo) {
+          await apiService.exportArrivalsExcel({ branch_id: branchId });
+        } else {
+          await apiService.exportArrivalsExcel({
+            branch_id: branchId,
+            date_from: dateFrom || undefined,
+            date_to: dateTo || undefined,
+          });
+        }
         toast({ title: 'Отчет экспортирован в Excel' });
         return;
       }
