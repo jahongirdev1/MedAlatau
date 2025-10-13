@@ -105,7 +105,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
     { path: '/admin/employees', icon: Users, label: 'Сотрудники' },
     { path: '/admin/patients', icon: UserCheck, label: 'Пациенты' },
     { path: '/admin/reports/warehouse', icon: FileText, label: 'Отчёты склада' },
-    { path: '/admin/reports/branches', icon: FileText, label: 'Отчёты филиалов' },
+    { path: '/admin/warehouse/branch-reports', icon: FileText, label: 'Отчёты филиалов' },
     { path: '/admin/analytics', icon: FileText, label: 'Аналитика' },
     { path: '/admin/calendar', icon: Clock, label: 'Календарь' },
     { path: '/admin/profile', icon: User, label: 'Личный кабинет' },

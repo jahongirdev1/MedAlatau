@@ -779,6 +779,90 @@ class ApiService {
     URL.revokeObjectURL(a.href);
   }
 
+  async getBranchStock(params: { branch_id: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    const res = await this.request<any>(`/reports/stock?${qs.toString()}`);
+    if ((res as any)?.error) return res as any;
+    return { data: this.normalizeData(res) };
+  }
+
+  async exportBranchStockExcel(params: { branch_id: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    qs.set('export', 'excel');
+    const res = await fetch(`${API_BASE_URL}/reports/stock?${qs.toString()}`, {
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `stock_${params.branch_id}_${params.date_to || 'all'}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async getBranchDispensings(params: { branch_id: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    const res = await this.request<any>(`/reports/dispensings?${qs.toString()}`);
+    if ((res as any)?.error) return res as any;
+    return { data: this.normalizeData(res) };
+  }
+
+  async exportBranchDispensingsExcel(params: { branch_id: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    qs.set('export', 'excel');
+    const res = await fetch(`${API_BASE_URL}/reports/dispensings?${qs.toString()}`, {
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `dispensings_${params.branch_id}_${params.date_to || 'all'}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async getBranchArrivals(params: { branch_id: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    const res = await this.request<any>(`/reports/arrivals?${qs.toString()}`);
+    if ((res as any)?.error) return res as any;
+    return { data: this.normalizeData(res) };
+  }
+
+  async exportBranchArrivalsExcel(params: { branch_id: string; date_from?: string; date_to?: string }) {
+    const qs = new URLSearchParams({ branch_id: params.branch_id });
+    if (params.date_from) qs.set('date_from', params.date_from);
+    if (params.date_to) qs.set('date_to', params.date_to);
+    qs.set('export', 'excel');
+    const res = await fetch(`${API_BASE_URL}/reports/arrivals?${qs.toString()}`, {
+      credentials: 'include',
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `arrivals_${params.branch_id}_${params.date_to || 'all'}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  }
+
   async getStockReport(params: { branch_id: string; date_from?: string; date_to?: string }) {
     const qs = new URLSearchParams(params as any).toString();
     const res = await this.request<any>(`/reports/stock?${qs}`);
