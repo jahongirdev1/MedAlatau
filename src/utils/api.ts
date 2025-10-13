@@ -745,8 +745,7 @@ class ApiService {
     const qs = new URLSearchParams({ branch_id: params.branch_id });
     if (params.date_from) qs.set('date_from', params.date_from);
     if (params.date_to) qs.set('date_to', params.date_to);
-    const query = qs.toString();
-    const res = await this.request<any>(`/reports/arrivals?${query}`);
+    const res = await this.request<any>(`/reports/arrivals?${qs.toString()}`);
     if ((res as any)?.error) return res as any;
     return { data: this.normalizeData(res) } as { data: IncomingRow[] };
   }
@@ -762,15 +761,22 @@ class ApiService {
     );
   }
 
-  exportArrivalsExcel(params: { branch_id: string; date_from?: string; date_to?: string }) {
+  async exportArrivalsExcel(params: { branch_id: string; date_from?: string; date_to?: string }) {
     const qs = new URLSearchParams({ branch_id: params.branch_id });
     if (params.date_from) qs.set('date_from', params.date_from);
     if (params.date_to) qs.set('date_to', params.date_to);
     qs.set('export', 'excel');
-    return this.fetchBlob(
-      `/reports/arrivals?${qs.toString()}`,
-      `arrivals_${params.date_to ?? 'all'}.xlsx`
-    );
+    const url = `${API_BASE_URL}/reports/arrivals?${qs.toString()}`;
+    const res = await fetch(url, { credentials: 'include' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `arrivals_report_${params.date_to || 'all'}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
   }
 
   async getStockReport(params: { branch_id: string; date_from?: string; date_to?: string }) {

@@ -13,6 +13,7 @@ from sqlalchemy import (
     case,
     DateTime,
     Date,
+    asc,
 )
 from sqlalchemy.sql.schema import Column
 from database import (
@@ -66,7 +67,7 @@ logger = logging.getLogger(__name__)
 log = logging.getLogger("reports")
 
 ALMATY_TZ = ZoneInfo("Asia/Almaty")
-MAIN_BRANCH_ID = os.getenv("MAIN_BRANCH_ID")
+MAIN_BRANCH_ID_ENV = os.getenv("MAIN_BRANCH_ID")
 
 
 def to_almaty(dt: datetime | str | None) -> str:
@@ -2021,26 +2022,30 @@ async def build_dispensings_json_payload(
 
 
 async def build_arrivals_json_payload(
-    *, branch_id: str | None, date_from: str | None, date_to: str | None, db: Session
+    db: Session, branch_id: str, date_from: str | None, date_to: str | None
 ) -> dict:
 
     q = db.query(DBArrival).order_by(DBArrival.date.asc())
+    tz_aware = getattr(DBArrival.date.type, "timezone", False)
 
-    start = _parse_report_date_start(date_from)
-    if start:
-        q = q.filter(DBArrival.date >= start)
+    start_dt = _parse_ymd_start(date_from)
+    end_dt = _parse_ymd_end(date_to)
 
-    end = _parse_report_date_end(date_to)
-    if end:
-        q = q.filter(DBArrival.date <= end)
+    if start_dt:
+        boundary = start_dt if tz_aware else start_dt.replace(tzinfo=None)
+        q = q.filter(DBArrival.date >= boundary)
+    if end_dt:
+        boundary = end_dt if tz_aware else end_dt.replace(tzinfo=None)
+        q = q.filter(DBArrival.date <= boundary)
 
     branch_col = get_arrival_branch_column()
-    if branch_id and branch_col is not None:
+    if branch_col is not None:
         q = q.filter(branch_col == branch_id)
-    elif branch_id and branch_col is None:
-        main_branch_id = MAIN_BRANCH_ID or _get_main_branch_id(db)
-        if main_branch_id and branch_id != main_branch_id:
+    else:
+        main_id = get_main_branch_id(db)
+        if main_id and branch_id != main_id:
             return {"data": []}
+
     rows = q.all()
 
     name_map = {(r.item_type, r.item_id): r.item_name for r in rows}
@@ -2058,14 +2063,42 @@ async def build_arrivals_json_payload(
         ):
             name_map[("medical_device", d.id)] = d.name
 
-    json_rows: list[dict] = []
+    result: list[dict] = []
     for r in rows:
         dt_iso = r.date.isoformat() if r.date else ""
-        name = name_map.get((r.item_type, r.item_id), r.item_name)
-        item = {"type": r.item_type, "name": name, "quantity": r.quantity}
-        json_rows.append({"id": r.id, "datetime": dt_iso, "items": [item]})
 
-    return {"data": json_rows}
+        raw_items = getattr(r, "items", None)
+        if raw_items:
+            items = [
+                {
+                    "type": i.item_type,
+                    "name": name_map.get((i.item_type, i.item_id), i.item_name),
+                    "quantity": i.quantity,
+                }
+                for i in raw_items
+            ]
+        else:
+            name = name_map.get((r.item_type, r.item_id), r.item_name)
+            items = [
+                {
+                    "type": r.item_type,
+                    "name": name,
+                    "quantity": r.quantity,
+                }
+            ]
+
+        human = "; ".join(f"{i['name']} — {i['quantity']}" for i in items)
+
+        result.append(
+            {
+                "id": str(r.id),
+                "datetime": dt_iso,
+                "items": items,
+                "items_human": human,
+            }
+        )
+
+    return {"data": result}
 
 
 @app.get("/reports/arrivals")
@@ -2079,13 +2112,11 @@ async def get_arrivals_report(
     db: Session = Depends(get_db),
 ):
     try:
-        result = await build_arrivals_json_payload(
-            branch_id=branch_id, date_from=date_from, date_to=date_to, db=db
-        )
+        payload = await build_arrivals_json_payload(db, branch_id, date_from, date_to)
 
         if _wants_excel(request, export, format):
             rows: list[list[str]] = []
-            for r in result.get("data", []):
+            for r in payload.get("data", []):
                 items_list = r.get("items", []) or []
                 items_human = "; ".join(
                     f"{i.get('name','')} — {i.get('quantity','')}" for i in items_list
@@ -2109,11 +2140,11 @@ async def get_arrivals_report(
                 content,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 headers=_ascii_download_headers(
-                    f"arrivals_{safe_to}.xlsx"
+                    f"arrivals_report_{safe_to}.xlsx"
                 ),
             )
 
-        return result
+        return payload
     except HTTPException as exc:
         raise HTTPException(status_code=400, detail=exc.detail)
     except Exception as e:
@@ -2220,23 +2251,50 @@ def _wants_excel(
     return e in {"excel", "xlsx"} or f in {"excel", "xlsx"}
 
 
-def _get_main_branch_id(db):
-    global MAIN_BRANCH_ID
-    if MAIN_BRANCH_ID:
-        return MAIN_BRANCH_ID
-    row = db.execute(
-        text(
-            "SELECT id FROM branches WHERE is_main=true ORDER BY created_at ASC LIMIT 1"
-        )
-    ).first()
-    if not row:
-        row = db.execute(
-            text("SELECT id FROM branches ORDER BY created_at ASC LIMIT 1")
-        ).first()
-    if not row:
+def _parse_ymd_start(s: str | None):
+    if not s:
         return None
-    MAIN_BRANCH_ID = row[0]
-    return MAIN_BRANCH_ID
+    return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+
+
+def _parse_ymd_end(s: str | None):
+    if not s:
+        return None
+    dt = datetime.fromisoformat(s)
+    return dt.replace(
+        hour=23,
+        minute=59,
+        second=59,
+        microsecond=999999,
+        tzinfo=timezone.utc,
+    )
+
+
+def get_main_branch_id(db) -> str | None:
+    if MAIN_BRANCH_ID_ENV:
+        return MAIN_BRANCH_ID_ENV
+
+    by_name = (
+        db.execute(
+            select(DBBranch.id)
+            .where(
+                (DBBranch.name.ilike("main"))
+                | (DBBranch.name.ilike("главный склад"))
+            )
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if by_name:
+        return by_name
+
+    earliest = (
+        db.execute(select(DBBranch.id).order_by(asc(DBBranch.created_at)).limit(1))
+        .scalars()
+        .first()
+    )
+    return earliest
 
 
 # Backward compatibility for older callers
@@ -2261,16 +2319,10 @@ def get_arrival_branch_column() -> Column | None:
     Может быть DBArrival.branch_id, DBArrival.to_branch_id и т.п.
     Если колонки нет — возвращает None (глобальные приходы).
     """
-    col = getattr(DBArrival, "branch_id", None) or getattr(DBArrival, "to_branch_id", None)
-    if col is not None:
-        return col
-    for rel_name in ("branch", "to_branch"):
-        rel = getattr(DBArrival, rel_name, None)
-        if rel is not None:
-            rel_id = getattr(rel, "id", None)
-            if rel_id is not None:
-                return rel_id
-    return None
+    col = getattr(DBArrival, "branch_id", None) or getattr(
+        DBArrival, "to_branch_id", None
+    )
+    return col
 
 
 def pick_arrival_branch_col(Arrival):
