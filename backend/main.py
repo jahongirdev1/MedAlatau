@@ -89,6 +89,39 @@ def _parse_date_ymd(s: str | None):
     return datetime.fromisoformat(s).replace(tzinfo=None)
 
 
+def parse_ymd_aware(s: str | None, default: datetime | None = None) -> datetime | None:
+    if not s:
+        return default
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = datetime.combine(dt.date(), time.min, tzinfo=ALMATY_TZ)
+    else:
+        dt = dt.astimezone(ALMATY_TZ)
+    return dt
+
+
+def daterange_almaty(
+    date_from: str | None, date_to: str | None
+) -> tuple[datetime | None, datetime | None]:
+    start = parse_ymd_aware(date_from)
+    end = parse_ymd_aware(date_to)
+    if start and not end:
+        end = start
+    if end and not start:
+        start = end
+    if start and end:
+        start_day = datetime.combine(start.date(), time.min, tzinfo=ALMATY_TZ)
+        end_exclusive = datetime.combine(end.date(), time.min, tzinfo=ALMATY_TZ) + timedelta(
+            days=1
+        )
+        return start_day, end_exclusive
+    return None, None
+
+
+def to_utc(dt: datetime) -> datetime:
+    return dt.astimezone(timezone.utc)
+
+
 def _to_local_str(dt: datetime | None) -> str:
     if not dt:
         return ""
@@ -2021,40 +2054,110 @@ async def build_dispensings_json_payload(
     return {"data": json_rows}
 
 
-async def build_arrivals_json_payload(
-    db: Session, branch_id: str, date_from: str | None, date_to: str | None
-) -> dict:
-
-    q = db.query(DBArrival).order_by(DBArrival.date.asc())
-    tz_aware = getattr(DBArrival.date.type, "timezone", False)
-
-    start_dt = _parse_ymd_start(date_from)
-    end_dt = _parse_ymd_end(date_to)
-
-    if start_dt:
-        boundary = start_dt if tz_aware else start_dt.replace(tzinfo=None)
-        q = q.filter(DBArrival.date >= boundary)
-    if end_dt:
-        boundary = end_dt if tz_aware else end_dt.replace(tzinfo=None)
-        q = q.filter(DBArrival.date <= boundary)
-
-    branch_col = get_arrival_branch_column()
-    if branch_col is not None:
-        q = q.filter(branch_col == branch_id)
+def _normalize_bound_for_column(dt: datetime, column_attr) -> datetime:
+    tz_aware = False
+    if hasattr(column_attr, "property") and getattr(column_attr.property, "columns", None):
+        tz_aware = getattr(column_attr.property.columns[0].type, "timezone", False)
     else:
-        main_id = get_main_branch_id(db)
-        if main_id and branch_id != main_id:
-            return {"data": []}
+        tz_aware = getattr(getattr(column_attr, "type", None), "timezone", False)
+    return dt if tz_aware else dt.replace(tzinfo=None)
 
-    rows = q.all()
 
-    name_map = {(r.item_type, r.item_id): r.item_name for r in rows}
+def _rows_from_arrivals_table(
+    db: Session,
+    branch_id: str | None,
+    start_utc: datetime | None,
+    end_utc: datetime | None,
+):
+    has_branch = hasattr(DBArrival, "branch_id")
+    stmt = select(DBArrival).order_by(DBArrival.date.asc())
+
+    if start_utc and end_utc:
+        start_bound = _normalize_bound_for_column(start_utc, DBArrival.date)
+        end_bound = _normalize_bound_for_column(end_utc, DBArrival.date)
+        stmt = stmt.where(and_(DBArrival.date >= start_bound, DBArrival.date < end_bound))
+
+    if branch_id and has_branch:
+        stmt = stmt.where(DBArrival.branch_id == branch_id)
+
+    rows = db.execute(stmt).scalars().all()
+    return rows, has_branch
+
+
+def _rows_from_accepted_shipments(
+    db: Session,
+    branch_id: str | None,
+    start_utc: datetime | None,
+    end_utc: datetime | None,
+):
+    if not branch_id:
+        return []
+
+    sh = DBShipment
+    si = DBShipmentItem
+
+    stmt = (
+        select(
+            sh.id,
+            sh.created_at,
+            si.item_type,
+            si.item_id,
+            si.item_name,
+            si.quantity,
+        )
+        .join(si, si.shipment_id == sh.id)
+        .where(and_(sh.status == "accepted", sh.to_branch_id == branch_id))
+        .order_by(sh.created_at.asc(), si.id.asc())
+    )
+
+    if start_utc and end_utc:
+        start_bound = _normalize_bound_for_column(start_utc, sh.created_at)
+        end_bound = _normalize_bound_for_column(end_utc, sh.created_at)
+        stmt = stmt.where(and_(sh.created_at >= start_bound, sh.created_at < end_bound))
+
+    return db.execute(stmt).all()
+
+
+def _sort_key_datetime(value) -> datetime:
+    dt_value: datetime | None = None
+    if isinstance(value, datetime):
+        dt_value = value
+    elif isinstance(value, str) and value:
+        try:
+            dt_value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            dt_value = None
+
+    if not dt_value:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    if dt_value.tzinfo is None:
+        return dt_value.replace(tzinfo=timezone.utc)
+    return dt_value.astimezone(timezone.utc)
+
+
+def build_arrivals_json_payload(
+    db: Session,
+    branch_id: str | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> dict:
+    start_alma, end_alma_excl = daterange_almaty(date_from, date_to)
+    start_utc = to_utc(start_alma) if start_alma else None
+    end_utc = to_utc(end_alma_excl) if end_alma_excl else None
+
+    rows_arr, arrivals_has_branch = _rows_from_arrivals_table(
+        db, branch_id, start_utc, end_utc
+    )
+
+    if branch_id and not arrivals_has_branch:
+        rows_arr = []
+
+    name_map = {(r.item_type, r.item_id): r.item_name for r in rows_arr}
 
     med_ids = [iid for (t, iid) in name_map if t == "medicine"]
     if med_ids:
-        for m in db.query(DBMedicine.id, DBMedicine.name).filter(
-            DBMedicine.id.in_(med_ids)
-        ):
+        for m in db.query(DBMedicine.id, DBMedicine.name).filter(DBMedicine.id.in_(med_ids)):
             name_map[("medicine", m.id)] = m.name
     dev_ids = [iid for (t, iid) in name_map if t == "medical_device"]
     if dev_ids:
@@ -2063,8 +2166,9 @@ async def build_arrivals_json_payload(
         ):
             name_map[("medical_device", d.id)] = d.name
 
-    result: list[dict] = []
-    for r in rows:
+    data: list[dict] = []
+
+    for r in rows_arr:
         dt_iso = r.date.isoformat() if r.date else ""
 
         raw_items = getattr(r, "items", None)
@@ -2073,7 +2177,7 @@ async def build_arrivals_json_payload(
                 {
                     "type": i.item_type,
                     "name": name_map.get((i.item_type, i.item_id), i.item_name),
-                    "quantity": i.quantity,
+                    "quantity": int(i.quantity or 0),
                 }
                 for i in raw_items
             ]
@@ -2083,13 +2187,13 @@ async def build_arrivals_json_payload(
                 {
                     "type": r.item_type,
                     "name": name,
-                    "quantity": r.quantity,
+                    "quantity": int(r.quantity or 0),
                 }
             ]
 
         human = "; ".join(f"{i['name']} — {i['quantity']}" for i in items)
 
-        result.append(
+        data.append(
             {
                 "id": str(r.id),
                 "datetime": dt_iso,
@@ -2098,13 +2202,48 @@ async def build_arrivals_json_payload(
             }
         )
 
-    return {"data": result}
+    shipments_rows = _rows_from_accepted_shipments(db, branch_id, start_utc, end_utc)
+    shipments_map: dict[str, dict] = {}
+
+    for sh_id, created_at, item_type, item_id, item_name, qty in shipments_rows:
+        key = str(sh_id)
+        if isinstance(created_at, datetime):
+            dt_value = created_at.isoformat()
+        elif isinstance(created_at, str):
+            dt_value = created_at
+        else:
+            dt_value = ""
+
+        rec = shipments_map.setdefault(
+            key,
+            {
+                "id": key,
+                "datetime": dt_value,
+                "items": [],
+            },
+        )
+        rec["items"].append(
+            {
+                "type": item_type,
+                "name": item_name,
+                "quantity": int(qty or 0),
+            }
+        )
+
+    for rec in shipments_map.values():
+        human = "; ".join(f"{i['name']} — {i['quantity']}" for i in rec.get("items", []))
+        rec["items_human"] = human
+        data.append(rec)
+
+    data.sort(key=lambda r: (_sort_key_datetime(r.get("datetime")), r.get("id", "")))
+
+    return {"data": data}
 
 
 @app.get("/reports/arrivals")
-async def get_arrivals_report(
+def get_arrivals_report(
     request: Request,
-    branch_id: str = Query(...),
+    branch_id: str | None = Query(None),
     date_from: str | None = Query(None),
     date_to: str | None = Query(None),
     export: str | None = Query(None),
@@ -2112,7 +2251,7 @@ async def get_arrivals_report(
     db: Session = Depends(get_db),
 ):
     try:
-        payload = await build_arrivals_json_payload(db, branch_id, date_from, date_to)
+        payload = build_arrivals_json_payload(db, branch_id, date_from, date_to)
 
         if _wants_excel(request, export, format):
             rows: list[list[str]] = []
@@ -2249,25 +2388,6 @@ def _wants_excel(
 ) -> bool:
     e, f = (export or "").lower(), (format_ or "").lower()
     return e in {"excel", "xlsx"} or f in {"excel", "xlsx"}
-
-
-def _parse_ymd_start(s: str | None):
-    if not s:
-        return None
-    return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
-
-
-def _parse_ymd_end(s: str | None):
-    if not s:
-        return None
-    dt = datetime.fromisoformat(s)
-    return dt.replace(
-        hour=23,
-        minute=59,
-        second=59,
-        microsecond=999999,
-        tzinfo=timezone.utc,
-    )
 
 
 def get_main_branch_id(db) -> str | None:
