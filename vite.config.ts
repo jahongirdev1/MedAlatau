@@ -7,7 +7,7 @@ import { componentTagger } from "lovable-tagger";
 // VITE_HOST=0.0.0.0
 // VITE_PORT=8080
 export default defineConfig(({ mode }) => {
-  const HOST = process.env.VITE_HOST || "192.168.8.79";   // можно поставить "192.168.8.79" или "med-alatau.local"
+  const HOST = process.env.VITE_HOST || "0.0.0.0";   // можно поставить "192.168.8.79" или "med-alatau.local"
   const PORT = Number(process.env.VITE_PORT || 8080);
 
   return {

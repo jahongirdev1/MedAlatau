@@ -353,7 +353,7 @@ app = FastAPI(title="Warehouse Management System")
 ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
-    "http://192.168.8.79:8080",  # TODO: replace with the active frontend origin if different
+    "http://192.168.8.159:8080",  # TODO: replace with the active frontend origin if different
 ]
 
 app.add_middleware(
